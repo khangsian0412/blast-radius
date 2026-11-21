@@ -83,28 +83,8 @@ class ConservativeTests(unittest.TestCase):
         self.data["attribute_init"] = []
         self.data["files"][self.name]["lines"] = {"2": 1}
 
-    def test_runtime_scalar_retains_all_class_and_attribute_users(self):
+    def test_known_runtime_scalar_stays_broad_at_this_checkpoint(self):
         self.runtime_setting()
-        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 7)
-
-    def test_scalar_read_during_import_is_not_narrowed(self):
-        self.runtime_setting()
-        self.data["attribute_init"] = ["sqlglot.example.Example.VALUE"]
-        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
-
-    def test_new_setting_type_or_expression_is_not_narrowed(self):
-        self.runtime_setting()
-        for replacement in ('"changed"', '1 + 1'):
-            self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = " + replacement)), 15)
-
-    def test_missing_class_usage_prevents_runtime_setting_reduction(self):
-        self.runtime_setting()
-        self.data["classes"] = {}
-        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
-
-    def test_missing_import_measurements_prevent_runtime_setting_reduction(self):
-        self.runtime_setting()
-        del self.data["attribute_init"]
         self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
 
     def test_comment_can_change_observable_code_metadata(self):

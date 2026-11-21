@@ -748,60 +748,6 @@ class Selector:
             bits = self.dependents(name) or self.all
         return bits
 
-    def runtime_literal_users(self, name, before, after, line):
-        """Keep all class users for an observed, runtime-only scalar setting.
-
-        Import-read fields, unobserved fields, special attributes, expressions,
-        dictionaries, changed annotations and new/deleted bindings stay broad.
-        """
-        if not self.map.get("shared_collection") or not self.map.get("attribute_dependencies_complete") or "attribute_init" not in self.map:
-            return None
-        parents = sorted(
-            (node for node in ast.walk(before) if isinstance(node, ast.ClassDef)
-             and node.lineno <= line <= node.end_lineno),
-            key=lambda node: node.lineno,
-        )
-        if not parents:
-            return None
-
-        def field(statement):
-            if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
-                return statement.targets[0].id, statement.type_comment
-            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-                return statement.target.id, (ast.dump(statement.annotation), statement.simple)
-            return None
-
-        old = next((node for node in parents[-1].body if node.lineno <= line <= node.end_lineno), None)
-        binding = field(old)
-        if not binding or binding[0].startswith("_"):
-            return None
-        target = after
-        for parent in parents:
-            matches = [node for node in target.body if isinstance(node, ast.ClassDef) and node.name == parent.name]
-            if len(matches) != 1:
-                return None
-            target = matches[0]
-        matches = [node for node in target.body if type(node) is type(old) and field(node) == binding]
-        if len(matches) != 1:
-            return None
-        try:
-            previous = ast.literal_eval(old.value)
-            replacement = ast.literal_eval(matches[0].value)
-        except (ValueError, TypeError, SyntaxError):
-            return None
-        if type(previous) not in (bool, int, float, str, type(None)) or type(previous) is not type(replacement):
-            return None
-        module = name.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
-        key = module + "." + ".".join(parent.name for parent in parents)
-        attribute = key + "." + binding[0]
-        if attribute in self.map.get("attribute_init", ()):
-            return None
-        attribute_users = self.pool[self.map.get("attributes", {}).get(attribute, 0)]
-        class_users = self.pool[self.map.get("classes", {}).get(key, 0)]
-        if not attribute_users or not class_users:
-            return None
-        return attribute_users | class_users | self.range_mask(name, parents[-1].lineno, parents[-1].end_lineno)
-
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -869,11 +815,7 @@ class Selector:
                 for line in removed:
                     owners = [node for node in functions if node.lineno <= line <= node.end_lineno]
                     if not owners:
-                        setting_users = self.runtime_literal_users(name, before, after, line)
-                        if setting_users is None:
-                            return self.all
-                        affected |= setting_users
-                        continue
+                        return self.all
                     owner = min(owners, key=lambda node: node.end_lineno - node.lineno)
                     start = owner.body.lineno if isinstance(owner, ast.Lambda) else owner.body[0].lineno
                     initialized = any(start <= point <= owner.end_lineno for point in initial)
