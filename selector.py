@@ -286,6 +286,24 @@ class Selector:
                 bits |= 1 << i
         return bits
 
+    def class_dependency_mask(self, key):
+        visited = {key}
+        pending = [key]
+        while pending:
+            for consumer in self.map.get("class_dependencies", {}).get(
+                pending.pop(), ()
+            ):
+                if consumer not in visited:
+                    visited.add(consumer)
+                    pending.append(consumer)
+        result = union(
+            self.pool[self.map.get("classes", {}).get(name, 0)] for name in visited
+        )
+        for name in visited:
+            for module in self.map.get("class_module_dependencies", {}).get(name, ()):
+                result |= self.dependents(module)
+        return result
+
     def equivalent(self, name, before, after):
         """Prove identity/equality rewrites from baseline operand type domains.
 
@@ -523,9 +541,11 @@ class Selector:
                 import_time_lines.append(line)
                 continue
             owner = min(body_owners, key=lambda node: node.end_lineno - node.lineno)
-            if any(
-                owner.lineno <= point <= owner.end_lineno
-                for point in self.map["files"].get(name, {}).get("init", ())
+            initial = self.map["files"].get(name, {}).get("init", ())
+            if (
+                (line in initial)
+                if isinstance(owner, ast.Lambda)
+                else any(owner.lineno <= point <= owner.end_lineno for point in initial)
             ):
                 bits |= self.dependents(name)
             direct = executable.get(line, 0)
@@ -654,7 +674,11 @@ class Selector:
                         name, target.lineno, target.end_lineno
                     )
                     if any(field in init_reads for field in field_keys):
-                        class_bits |= self.dependents(name)
+                        class_bits |= (
+                            self.class_dependency_mask(key)
+                            if self.map.get("class_dependencies_complete")
+                            else self.dependents(name)
+                        )
                     bits |= class_bits or self.dependents(name)
             else:
                 bits |= self.dependents(name)

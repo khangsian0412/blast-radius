@@ -425,6 +425,42 @@ class PrecisionTests(unittest.TestCase):
             3,
         )
 
+    def test_class_initializers_follow_class_dependencies(self):
+        self.source = "class Example:\n    FLAG = 1\n"
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["classes"] = {
+            "sqlglot.example.Example": 1,
+            "sqlglot.consumer.Consumer": 2,
+        }
+        self.data["attributes"] = {"sqlglot.example.Example.FLAG": 1}
+        self.data["attribute_init"] = ["sqlglot.example.Example.FLAG"]
+        self.data["class_dependencies_complete"] = True
+        self.data["class_dependencies"] = {
+            "sqlglot.example.Example": ["sqlglot.consumer.Consumer"]
+        }
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("FLAG = 1", "FLAG = 2"))
+            ),
+            3,
+        )
+
+    def test_an_initializer_confined_to_its_class_stays_precise(self):
+        self.source = "class Example:\n    FLAG = 1\n"
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["classes"] = {"sqlglot.example.Example": 1}
+        self.data["attributes"] = {"sqlglot.example.Example.FLAG": 1}
+        self.data["attribute_init"] = ["sqlglot.example.Example.FLAG"]
+        self.data["class_dependencies_complete"] = True
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("FLAG = 1", "FLAG = 2"))
+            ),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

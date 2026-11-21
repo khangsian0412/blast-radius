@@ -17,6 +17,8 @@ def main():
     os.environ["SKIP_INTEGRATION"] = "0"
     unsafe = set()
     dependencies = {}
+    class_dependencies = {}
+    class_modules = {}
     module_files = {}
     for path in (root / "sqlglot").rglob("*.py"):
         parts = list(path.relative_to(root).with_suffix("").parts)
@@ -29,7 +31,40 @@ def main():
         if key:
             unsafe.add(key)
             if finder.import_stack:
-                consumer = module_files.get(finder.import_stack[-1])
+                consumer_module = finder.import_stack[-1]
+                consumer = module_files.get(consumer_module)
+                parent_class = key.rsplit(".", 1)[0]
+                target_class = None
+                frame = sys._getframe(1)
+                while frame is not None:
+                    values = frame.f_locals
+                    if frame.f_code.co_name in {"__init_subclass__", "__new__"}:
+                        candidate = (
+                            values.get("klass")
+                            if frame.f_code.co_name == "__new__"
+                            else values.get("cls")
+                        )
+                        if (
+                            isinstance(candidate, type)
+                            and candidate.__module__ == consumer_module
+                        ):
+                            target_class = (
+                                f"{candidate.__module__}.{candidate.__qualname__}"
+                            )
+                            break
+                    if values.get("__module__") == consumer_module and isinstance(
+                        values.get("__qualname__"), str
+                    ):
+                        target_class = consumer_module + "." + values["__qualname__"]
+                        break
+                    frame = frame.f_back
+                if target_class:
+                    if target_class != parent_class:
+                        class_dependencies.setdefault(parent_class, set()).add(
+                            target_class
+                        )
+                elif consumer:
+                    class_modules.setdefault(parent_class, set()).add(consumer)
                 origins = [
                     module for module in module_files if key.startswith(module + ".")
                 ]
@@ -76,6 +111,13 @@ def main():
         json.dumps(
             {
                 "import_lines": files,
+                "class_dependencies_complete": True,
+                "class_dependencies": {
+                    key: sorted(value) for key, value in class_dependencies.items()
+                },
+                "class_module_dependencies": {
+                    key: sorted(value) for key, value in class_modules.items()
+                },
                 "import_attributes": sorted(unsafe),
                 "import_dependencies": {
                     key: sorted(value) for key, value in dependencies.items()
