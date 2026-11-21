@@ -22,11 +22,13 @@ def main():
     profiles = {}
     types = {}
     keys = {}
+    type_objects = {}
     value_profiles = {}
 
     def record(site, side, cls):
         identity = id(cls)
         if identity not in keys:
+            type_objects[identity] = cls  # Prevent identity reuse by local classes.
             key = f"{cls.__module__}.{cls.__qualname__}"
             keys[identity] = key
             equality = inspect.getattr_static(cls, "__eq__", None)

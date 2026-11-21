@@ -27,6 +27,7 @@ class Verifier:
         for i, item in enumerate(selector.map.get("task_ids", ())):
             self.groups.setdefault(item["test"], []).append((i, item["ordinal"]))
         self.log = []
+        self.last_report = None
 
     def task_selector(self):
         if self.tasks is None:
@@ -83,6 +84,11 @@ class Verifier:
                 ]
                 if owners:
                     owner = min(owners, key=lambda node: node.end_lineno - node.lineno)
+                    if any(
+                        owner.lineno <= entry <= owner.end_lineno
+                        for entry in data["files"].get(name, {}).get("init", ())
+                    ):
+                        return self.selector.all
                     bits |= union(
                         self.selector.pool[value]
                         for point, value in outside.items()
@@ -95,6 +101,7 @@ class Verifier:
 
     def check(self, patch, selected):
         self.log = []
+        self.last_report = None
         if not selected:
             return selected
         try:
@@ -115,11 +122,37 @@ class Verifier:
                 ast.parse(new.encode("utf-8"))
                 overrides[change.old] = new
                 points = removed | gaps | {gap + 1 for gap in gaps}
-                if points.intersection(
-                    self.selector.map["files"].get(change.old, {}).get("init", ())
-                ):
+                initial = self.selector.map["files"].get(change.old, {}).get("init", ())
+                if gaps or points.intersection(initial):
                     collect = True
-            chosen = [self.tests[i] for i in iter_bits(selected)]
+                functions = [
+                    node
+                    for node in ast.walk(self.selector.tree(change.old))
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+                for point in points:
+                    owners = [
+                        node
+                        for node in functions
+                        if node.body and node.body[0].lineno <= point <= node.end_lineno
+                    ]
+                    if not owners or any(
+                        any(
+                            node.lineno <= entry <= node.end_lineno for entry in initial
+                        )
+                        for node in owners
+                    ):
+                        collect = True
+            excluded = set(self.selector.map.get("traced_children", ()))
+            excluded.update(
+                self.tests[i]["id"]
+                for i in iter_bits(self.selector.always | self.selector.unknown)
+            )
+            chosen = [
+                self.tests[i]
+                for i in iter_bits(selected)
+                if self.tests[i]["id"] not in excluded
+            ]
             targets = []
             plans = {}
             if self.cpu_used < self.cpu_budget and time.monotonic() < self.deadline - 5:
@@ -192,6 +225,7 @@ class Verifier:
                 )
                 return self.selector.all if collect else selected
             report = json.loads(result.stdout)
+            self.last_report = report
             if collect and not report.get("collection_ok"):
                 failed_files = set(report.get("collection_errors", ()))
                 known_files = {t["file"] for t in self.tests}

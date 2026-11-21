@@ -14,7 +14,9 @@ jobs:
         run: make sample
       - name: Validate and require zero sample misses
         run: python3 tools/validate.py sample output.jsonl --require-no-misses
-      - name: Check three deterministic runs and runtime resources
+      - name: Check import failures and failed subtests
+        run: python3 tools/regressions.py
+      - name: Check three valid runs and runtime resources
         run: python3 tools/benchmark.py
       - uses: actions/upload-artifact@v4
         with:

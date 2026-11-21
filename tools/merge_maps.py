@@ -26,7 +26,11 @@ def main():
                 if file in data["files"]:
                     data["files"][file]["init"] = lines
         if "child_lines" in extra:
-            for file, lines in extra.pop("child_lines").items():
+            child_lines = extra.pop("child_lines")
+            data["subprocess_lines"] = {
+                file: sorted(map(int, lines)) for file, lines in child_lines.items()
+            }
+            for file, lines in child_lines.items():
                 record = data["files"].setdefault(file, {"lines": {}})
                 for line, names in lines.items():
                     bits = 0
@@ -46,6 +50,8 @@ def main():
         if "dictionary_reads" in extra:
             dictionaries = {}
             for origin, record in extra.pop("dictionary_reads").items():
+                if record["unsafe"]:
+                    continue
                 reads = {}
                 for key, names in record["reads"].items():
                     bits = 0

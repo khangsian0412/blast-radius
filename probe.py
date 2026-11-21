@@ -184,6 +184,7 @@ def main():
         "-q",
         "-s",
         "--tb=no",
+        "--assert=plain",
         "--disable-warnings",
         "-o",
         "addopts=",

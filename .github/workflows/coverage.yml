@@ -5,7 +5,7 @@ on:
       kind:
         description: Baseline measurements to rebuild
         type: choice
-        options: [all, coverage, profiles]
+        options: [all, coverage, profiles, types, dictionaries]
         default: all
 permissions:
   contents: read
@@ -20,15 +20,20 @@ jobs:
       - name: Prepare exact baseline environment
         run: docker build --platform linux/amd64 -f tools/Dockerfile.maps -t blast-maps .
       - name: Collect line, class, attribute and task coverage
-        if: inputs.kind != 'profiles'
+        if: inputs.kind == 'all' || inputs.kind == 'coverage'
         run: docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect.py baseline maps/coverage.json --raw /workspace/coverage.raw
       - name: Collect type, import and subprocess profiles
-        if: inputs.kind != 'coverage'
+        if: inputs.kind != 'coverage' && inputs.kind != 'dictionaries'
         run: |
           mkdir -p profiles
-          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json && python tools/collect_dicts.py baseline profiles/dicts.json'
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json'
+      - name: Collect literal dictionary reads
+        if: inputs.kind == 'all' || inputs.kind == 'profiles' || inputs.kind == 'dictionaries'
+        run: |
+          mkdir -p profiles
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_dicts.py baseline profiles/dicts.json
       - uses: actions/upload-artifact@v4
-        if: inputs.kind != 'profiles'
+        if: inputs.kind == 'all' || inputs.kind == 'coverage'
         with:
           name: baseline-coverage
           path: |
@@ -37,5 +42,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: inputs.kind != 'coverage'
         with:
-          name: baseline-profiles
+          name: baseline-profiles-${{ inputs.kind }}
           path: profiles/*.json

@@ -27,8 +27,12 @@ def main():
 
     def observe(origin, key=None, escape=False):
         record = records[origin]
+        if record["unsafe"]:
+            return
         if escape or not active[0]:
             record["unsafe"] = True
+            record["reads"].clear()
+            return
         if active[0]:
             keys = (
                 record["keys"]

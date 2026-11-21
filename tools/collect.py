@@ -33,6 +33,7 @@ def main():
     outcomes = {}
     class_reads = {}
     class_keys = {}
+    class_objects = {}
     untraced = set()
     class_contexts = {}
     attribute_reads = {}
@@ -75,6 +76,7 @@ def main():
             return
         seen.add(cls_id)
         if cls_id not in class_keys:
+            class_objects[cls_id] = cls  # Keep identity cache keys alive.
             class_keys[cls_id] = tuple(
                 f"{parent.__module__}.{parent.__qualname__}"
                 for parent in cls.__mro__

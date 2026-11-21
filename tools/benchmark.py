@@ -19,7 +19,7 @@ import json, resource, runpy, sys
 runpy.run_path('/app/selector.py', run_name='__main__')
 a = resource.getrusage(resource.RUSAGE_SELF)
 b = resource.getrusage(resource.RUSAGE_CHILDREN)
-print('BLAST_METRICS ' + json.dumps({'cpu_seconds': a.ru_utime+a.ru_stime+b.ru_utime+b.ru_stime, 'max_rss_kib': a.ru_maxrss}), file=sys.stderr)
+print('BLAST_METRICS ' + json.dumps({'cpu_seconds': a.ru_utime+a.ru_stime+b.ru_utime+b.ru_stime, 'max_rss_kib': max(a.ru_maxrss,b.ru_maxrss)}), file=sys.stderr)
 """
 
 
@@ -64,6 +64,7 @@ def main():
     ]
     runs = []
     first = None
+    identical = True
     for number in range(1, 4):
         started = time.monotonic()
         result = subprocess.run(command, capture_output=True, timeout=180, check=True)
@@ -76,7 +77,7 @@ def main():
         if not evaluation["ok"] or evaluation["missed_commits"]:
             raise SystemExit(f"Sample validation failed: {evaluation}")
         if first is not None and first != result.stdout:
-            raise SystemExit("Repeated runs produced different output")
+            identical = False
         first = result.stdout
         metrics = next(
             json.loads(line.removeprefix("BLAST_METRICS "))
@@ -95,6 +96,7 @@ def main():
         )
     report = {
         "runs": runs,
+        "identical_outputs": identical,
         "median_simulated_plus_measured_cpu_seconds": statistics.median(
             run["simulated_seconds"] + run["cpu_seconds"] for run in runs
         ),

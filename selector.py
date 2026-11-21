@@ -302,6 +302,8 @@ class Selector:
                 and len(old.ops) == len(new.ops) == 1
             ):
                 pair = (type(old.ops[0]), type(new.ops[0]))
+                if old.lineno in self.map.get("subprocess_lines", {}).get(name, ()):
+                    continue
                 if pair in {
                     (ast.Is, ast.Eq),
                     (ast.Eq, ast.Is),
@@ -385,7 +387,11 @@ class Selector:
             after, include_attributes=False
         )
 
-    def dictionary_mask(self, origin, old_value, new_value):
+    def dictionary_mask(self, origin, old_value, new_value, *, filename=None):
+        if filename and getattr(old_value, "lineno", -1) in self.map.get(
+            "subprocess_lines", {}
+        ).get(filename, ()):
+            return None
         record = self.map.get("dictionaries", {}).get(origin)
         if (
             self.unknown
@@ -412,6 +418,8 @@ class Selector:
             if ast.dump(a, include_attributes=False)
             != ast.dump(b, include_attributes=False)
         ]
+        if not changed:
+            return None
         return union(self.pool[record["reads"].get(key, 0)] for key in changed)
 
     def python_change(self, change: FileChange) -> int:
@@ -426,6 +434,10 @@ class Selector:
         if self.equivalent(name, before, after):
             self.reasons.append(f"{name}: equivalent Python syntax/typed operations")
             return 0
+        if inserted:
+            # A new definition can run decorators/defaults during import or
+            # override an inherited method without executing either old anchor.
+            return self.all
 
         executable = self.lines(name)
         functions = [
@@ -552,7 +564,10 @@ class Selector:
                             )
                             if names == fields:
                                 narrowed = self.dictionary_mask(
-                                    field_keys[0], old_statement.value, entry.value
+                                    field_keys[0],
+                                    old_statement.value,
+                                    entry.value,
+                                    filename=name,
                                 )
                                 break
                 if narrowed is not None:
