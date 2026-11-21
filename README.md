@@ -10,9 +10,9 @@ All 30 supplied sample commits are accepted by the official scorer with **zero m
 
 | Measure | Result |
 | --- | ---: |
-| Starter simulated cost | 1,614.120 seconds |
+| Starter simulated cost | 1,210.470 seconds |
 | This selector's simulated cost | **186.316 seconds** |
-| Reduction in simulated cost | **88.5%** |
+| Reduction in simulated cost | **84.6%** |
 | Unit tests | 20 passed |
 | Three container runs | Identical JSON output |
 | Container CPU per sample batch | About 0.8 seconds |
