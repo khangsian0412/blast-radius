@@ -28,6 +28,15 @@ def main():
         key = attribute_owner(obj, name)
         if key:
             unsafe.add(key)
+            if finder.import_stack:
+                consumer = module_files.get(finder.import_stack[-1])
+                origins = [
+                    module for module in module_files if key.startswith(module + ".")
+                ]
+                if consumer and origins:
+                    origin = module_files[max(origins, key=len)]
+                    if origin != consumer:
+                        dependencies.setdefault(origin, set()).add(consumer)
 
     finder = install(root, lambda obj: None, attribute)
 
