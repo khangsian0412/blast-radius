@@ -68,6 +68,13 @@ class ConservativeTests(unittest.TestCase):
         self.data["files"][self.name] = {"lines": {"3": 1}, "init": [2]}
         self.assertEqual(self.select(self.source.replace("value + 1", "value + 2")), 15)
 
+    def test_callback_defaults_on_the_body_line_keep_every_test(self):
+        self.source = "class Example:\n    CALLBACK = lambda value=1: value + 1\n"
+        self.data["files"][self.name] = {"lines": {"2": 1}, "init": [2]}
+        self.data["import_calls_complete"] = True
+        self.data["import_calls"] = {}
+        self.assertEqual(self.select(self.source.replace("value=1", "value=2")), 15)
+
     def runtime_setting(self):
         self.source = "class Example:\n    VALUE = 1\n"
         self.data["attributes"] = {"sqlglot.example.Example.VALUE": 1}

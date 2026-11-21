@@ -847,10 +847,22 @@ class Selector:
                     return self.all
                 if inserted or not removed:
                     return self.all
+                function_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
                 functions = [
                     node for node in ast.walk(before)
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+                    if isinstance(node, function_types)
                 ]
+                new_functions = [node for node in ast.walk(after) if isinstance(node, function_types)]
+                # A lambda's defaults and body may occupy the same source line.
+                # Header metadata is evaluated at definition, so line-based
+                # body coverage must never narrow a changed default/signature.
+                if len(functions) != len(new_functions) or any(
+                    type(previous) is not type(replacement)
+                    or ast.dump(previous.args, include_attributes=False)
+                    != ast.dump(replacement.args, include_attributes=False)
+                    for previous, replacement in zip(functions, new_functions)
+                ):
+                    return self.all
                 classes = [node for node in ast.walk(before) if isinstance(node, ast.ClassDef)]
                 initial = self.map["files"][name].get("init", ())
                 affected = 0
