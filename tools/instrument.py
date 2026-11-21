@@ -49,7 +49,9 @@ def attribute_owner(obj, name):
     return None
 
 
-def install(root: Path, record_class, record_attribute, record_type=None):
+def install(
+    root: Path, record_class, record_attribute, record_type=None, record_value=None
+):
     names = declaration_names(root)
 
     def read(obj, name):
@@ -66,7 +68,10 @@ def install(root: Path, record_class, record_attribute, record_type=None):
         return value
 
     def operand(site, side, value):
-        record_type(site, side, type(value))
+        if record_type is not None:
+            record_type(site, side, type(value))
+        if record_value is not None:
+            record_value(site, side, value)
         return value
 
     class Transform(ast.NodeTransformer):
@@ -76,9 +81,21 @@ def install(root: Path, record_class, record_attribute, record_type=None):
         def visit_Compare(self, node):
             node = self.generic_visit(node)
             if (
-                record_type is not None
+                (record_type is not None or record_value is not None)
                 and len(node.ops) == 1
-                and isinstance(node.ops[0], (ast.Is, ast.IsNot, ast.Eq, ast.NotEq))
+                and isinstance(
+                    node.ops[0],
+                    (
+                        ast.Is,
+                        ast.IsNot,
+                        ast.Eq,
+                        ast.NotEq,
+                        ast.Lt,
+                        ast.LtE,
+                        ast.Gt,
+                        ast.GtE,
+                    ),
+                )
             ):
                 site = f"{self.filename}:{node.lineno}:{node.col_offset}"
 

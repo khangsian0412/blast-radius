@@ -124,8 +124,8 @@ class Verifier:
             plans = {}
             if self.cpu_used < self.cpu_budget and time.monotonic() < self.deadline - 5:
                 # Cheap whole tests need no filtering assumptions.
-                if len(chosen) <= 10 and sum(t["seconds"] for t in chosen) <= (
-                    1.0 if collect else 0.25
+                if len(chosen) <= 10 and sum(t["seconds"] for t in chosen) <= float(
+                    os.environ.get("BLAST_SMALL_TEST_SECONDS", "0.7")
                 ):
                     targets = [t["id"] for t in chosen]
                 elif self.groups:

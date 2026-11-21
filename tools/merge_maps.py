@@ -43,6 +43,18 @@ def main():
                 if nodeid in test_index:
                     always &= ~(1 << test_index[nodeid])
             data["always"] = intern(always)
+        if "dictionary_reads" in extra:
+            dictionaries = {}
+            for origin, record in extra.pop("dictionary_reads").items():
+                reads = {}
+                for key, names in record["reads"].items():
+                    bits = 0
+                    for nodeid in names:
+                        if nodeid in test_index:
+                            bits |= 1 << test_index[nodeid]
+                    reads[key] = intern(bits)
+                dictionaries[origin] = {**record, "reads": reads}
+            data["dictionaries"] = dictionaries
         data.update(extra)
     data["pool"] = [format(bits, "x") for bits in pool]
     target.write_text(json.dumps(data, separators=(",", ":")) + "\n")

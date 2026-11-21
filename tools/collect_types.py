@@ -5,6 +5,7 @@ import concurrent.futures
 import enum
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import pickle
@@ -21,6 +22,7 @@ def main():
     profiles = {}
     types = {}
     keys = {}
+    value_profiles = {}
 
     def record(site, side, cls):
         identity = id(cls)
@@ -53,7 +55,40 @@ def main():
                 types[key] = fact
         profiles.setdefault(site, [set(), set()])[side].add(keys[identity])
 
-    install(root, lambda obj: None, lambda obj, name: None, record)
+    def bounded(value, depth=0):
+        kind = type(value)
+        if kind in (bool, type(None)):
+            return True
+        if kind is int:
+            return value.bit_length() <= 128
+        if kind is float:
+            return math.isfinite(value)
+        if kind is str:
+            return len(value) <= 80
+        return (
+            kind is tuple
+            and depth < 3
+            and len(value) <= 6
+            and all(bounded(item, depth + 1) for item in value)
+        )
+
+    def record_value(site, side, value):
+        profile = value_profiles.setdefault(
+            site,
+            [{"values": set(), "unknown": False}, {"values": set(), "unknown": False}],
+        )[side]
+        if profile["unknown"]:
+            return
+        if not bounded(value):
+            profile["unknown"] = True
+            profile["values"].clear()
+            return
+        profile["values"].add(repr(value))
+        if len(profile["values"]) > 64:
+            profile["unknown"] = True
+            profile["values"].clear()
+
+    install(root, lambda obj: None, lambda obj, name: None, record, record_value)
 
     class Pool:
         def __init__(self, *a, initializer=None, initargs=(), **kw):
@@ -99,6 +134,13 @@ def main():
                     for site, (a, b) in sorted(profiles.items())
                 },
                 "types": types,
+                "value_profiles": {
+                    site: [
+                        {"values": sorted(part["values"]), "unknown": part["unknown"]}
+                        for part in parts
+                    ]
+                    for site, parts in value_profiles.items()
+                },
             },
             separators=(",", ":"),
         )

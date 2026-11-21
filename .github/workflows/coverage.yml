@@ -26,7 +26,7 @@ jobs:
         if: inputs.kind != 'coverage'
         run: |
           mkdir -p profiles
-          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json'
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json && python tools/collect_dicts.py baseline profiles/dicts.json'
       - uses: actions/upload-artifact@v4
         if: inputs.kind != 'profiles'
         with:

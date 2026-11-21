@@ -11,6 +11,7 @@ import ast
 from dataclasses import dataclass, field
 import json
 import math
+import operator
 from pathlib import Path, PurePosixPath
 import re
 import sys
@@ -277,9 +278,22 @@ class Selector:
         No changed operation, patch, failing-test label, or mutant result is stored.
         Unknown/custom equality always prevents the proof.
         """
+        if self.unknown:
+            return ast.dump(before, include_attributes=False) == ast.dump(
+                after, include_attributes=False
+            )
         pending = [(before, after)]
         facts = self.map.get("types", {})
         profiles = self.map.get("type_profiles", {})
+        primitive_profiles = self.map.get("value_profiles", {})
+        operations = {
+            ast.Lt: operator.lt,
+            ast.LtE: operator.le,
+            ast.Gt: operator.gt,
+            ast.GtE: operator.ge,
+            ast.Eq: operator.eq,
+            ast.NotEq: operator.ne,
+        }
         while pending:
             old, new = pending.pop()
             if (
@@ -330,6 +344,30 @@ class Selector:
                         )
                     ):
                         new.ops = [type(old.ops[0])()]
+                if (
+                    pair[0] in operations
+                    and pair[1] in operations
+                    and pair[0] is not pair[1]
+                ):
+                    samples = primitive_profiles.get(
+                        f"{name}:{old.lineno}:{old.col_offset}", ()
+                    )
+                    if len(samples) == 2 and all(
+                        not part["unknown"] and part["values"] for part in samples
+                    ):
+                        try:
+                            left_values, right_values = (
+                                [ast.literal_eval(value) for value in part["values"]]
+                                for part in samples
+                            )
+                            if all(
+                                operations[pair[0]](a, b) == operations[pair[1]](a, b)
+                                for a in left_values
+                                for b in right_values
+                            ):
+                                new.ops = [type(old.ops[0])()]
+                        except (ValueError, TypeError, OverflowError):
+                            pass
             if (
                 isinstance(old, ast.AST)
                 and isinstance(new, ast.AST)
@@ -346,6 +384,35 @@ class Selector:
         return ast.dump(before, include_attributes=False) == ast.dump(
             after, include_attributes=False
         )
+
+    def dictionary_mask(self, origin, old_value, new_value):
+        record = self.map.get("dictionaries", {}).get(origin)
+        if (
+            self.unknown
+            or not record
+            or record["unsafe"]
+            or not isinstance(old_value, ast.Dict)
+            or not isinstance(new_value, ast.Dict)
+        ):
+            return None
+        try:
+            old = ast.literal_eval(old_value)
+            new = ast.literal_eval(new_value)
+        except (ValueError, TypeError, SyntaxError):
+            return None
+        if (
+            list(old) != list(new)
+            or set(old) != set(record["keys"])
+            or len(old_value.keys) != len(old)
+        ):
+            return None
+        changed = [
+            key
+            for key, a, b in zip(old, old_value.values, new_value.values)
+            if ast.dump(a, include_attributes=False)
+            != ast.dump(b, include_attributes=False)
+        ]
+        return union(self.pool[record["reads"].get(key, 0)] for key in changed)
 
     def python_change(self, change: FileChange) -> int:
         name = change.old
@@ -372,6 +439,8 @@ class Selector:
             changed.update((max(1, gap), min(len(old.splitlines()), gap + 1)))
         bits = 0
         import_time_lines = []
+        proved_unread = False
+        uncertain = False
         for line in changed:
             containing = [
                 node for node in functions if node.lineno <= line <= node.end_lineno
@@ -408,6 +477,8 @@ class Selector:
                     for entry in self.map["files"].get(name, {}).get("init", ())
                 ):
                     return self.all
+                if not direct:
+                    uncertain = True
             # Changing a late operand can make a previously short-circuited
             # expression run. Cover the entry to every containing Boolean test.
             for node in ast.walk(owner):
@@ -441,6 +512,53 @@ class Selector:
                         ):
                             fields.append(statement.target.id)
                 field_keys = [key + "." + field for field in fields]
+                narrowed = None
+                if len(field_keys) == 1:
+                    new_class = after
+                    for parent in parents:
+                        new_class = next(
+                            (
+                                entry
+                                for entry in new_class.body
+                                if isinstance(entry, ast.ClassDef)
+                                and entry.name == parent.name
+                            ),
+                            None,
+                        )
+                        if new_class is None:
+                            break
+                    old_statement = next(
+                        (
+                            entry
+                            for entry in target.body
+                            if isinstance(entry, (ast.Assign, ast.AnnAssign))
+                            and entry.lineno <= line <= entry.end_lineno
+                        ),
+                        None,
+                    )
+                    if new_class is not None and old_statement is not None:
+                        for entry in new_class.body:
+                            names = (
+                                [
+                                    item.id
+                                    for item in entry.targets
+                                    if isinstance(item, ast.Name)
+                                ]
+                                if isinstance(entry, ast.Assign)
+                                else [entry.target.id]
+                                if isinstance(entry, ast.AnnAssign)
+                                and isinstance(entry.target, ast.Name)
+                                else []
+                            )
+                            if names == fields:
+                                narrowed = self.dictionary_mask(
+                                    field_keys[0], old_statement.value, entry.value
+                                )
+                                break
+                if narrowed is not None:
+                    bits |= narrowed
+                    proved_unread = True
+                    continue
                 attributes = self.map.get("attributes", {})
                 init_reads = self.map.get("attribute_init", ())
                 if field_keys and all(
@@ -461,7 +579,9 @@ class Selector:
                     bits |= class_bits or self.dependents(name)
             else:
                 bits |= self.dependents(name)
-        if not bits:
+        if uncertain:
+            bits |= self.dependents(name) or self.all
+        if not bits and not proved_unread:
             # A coverage hole is uncertainty, not proof that nothing can break.
             bits = self.dependents(name) or self.all
         return bits
