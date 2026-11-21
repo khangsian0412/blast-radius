@@ -12,6 +12,14 @@ def main():
     pool = [int(value, 16) for value in data["pool"]]
     pool_index = {bits: i for i, bits in enumerate(pool)}
     test_index = {name: i for i, name in enumerate(data["tests"])}
+    if not data.get("outside_class_pool_valid"):
+        # Older collectors interned these masks after serializing their pool.
+        # All-context masks safely upper-bound the outside-task subsets, even
+        # when later profile merges happened to reuse an invalid forward index.
+        data["classes_outside"] = dict(data.get("classes", {}))
+        data["attributes_outside"] = dict(data.get("attributes", {}))
+        data["outside_class_pool_valid"] = True
+        data["outside_class_masks_conservative"] = True
 
     def intern(bits):
         if bits not in pool_index:

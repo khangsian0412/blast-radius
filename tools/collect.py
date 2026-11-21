@@ -305,6 +305,14 @@ def main():
         key: intern_tasks(contexts) for key, contexts in sorted(uses.items())
     }
     always = intern(untraced | {name for name in ids if outcomes.get(name) != "passed"})
+    attributes_outside = {
+        key: intern([context for context in contexts if "@@task:" not in context])
+        for key, contexts in sorted(attribute_reads.items())
+    }
+    classes_outside = {
+        key: intern([context for context in contexts if "@@task:" not in context])
+        for key, contexts in sorted(uses.items())
+    }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(
@@ -323,18 +331,9 @@ def main():
                 "attribute_tasks": attribute_tasks,
                 "attribute_init": sorted(attribute_init),
                 "class_tasks": class_tasks,
-                "attributes_outside": {
-                    key: intern(
-                        [context for context in contexts if "@@task:" not in context]
-                    )
-                    for key, contexts in sorted(attribute_reads.items())
-                },
-                "classes_outside": {
-                    key: intern(
-                        [context for context in contexts if "@@task:" not in context]
-                    )
-                    for key, contexts in sorted(uses.items())
-                },
+                "attributes_outside": attributes_outside,
+                "classes_outside": classes_outside,
+                "outside_class_pool_valid": True,
                 "task_ids": [
                     {
                         "test": tag.split("@@task:")[0],

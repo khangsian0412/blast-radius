@@ -81,6 +81,12 @@ fixture='tests/fixtures/optimizer/tpc-h/tpc-h.sql'
 fixture_bits=selector.pool[selector.map['fixtures'][fixture]]
 executor=[i for i,t in enumerate(tests) if t['id'].startswith('tests/test_executor.py::TestExecutor::')]
 assert executor and all(fixture_bits >> i & 1 for i in executor), 'shared fixture lost class setup dependencies'
+name='sqlglot/executor/table.py'
+tree=ast.parse((root/name).read_text())
+table=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Table')
+constructor=next(n for n in table.body if isinstance(n,ast.FunctionDef) and n.name=='__init__')
+shared_function=selector.range_mask(name,constructor.lineno,constructor.end_lineno)
+assert all(shared_function >> i & 1 for i in executor), 'shared setup function lost cached-state consumers'
 name='sqlglot/optimizer/scope.py'
 source=(root/name).read_text()
 modified='# an apparently harmless comment\n'+source

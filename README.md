@@ -12,7 +12,7 @@ The default selection policy prioritizes avoiding omissions. It reconstructs eac
 
 Source-file reads are recorded separately from execution coverage. A test that reads a module's source can inspect metadata from an already cached import without executing the changed statement. These dependencies are always retained, including for AST-equivalent edits, and cannot be cleared by probes whose virtual loader leaves the original files on disk.
 
-Known fixtures retain every recorded reader, including all members of a class whose setup loads that fixture. Unknown or empty fixture mappings keep the full inventory. A scalar class setting can use all class/attribute users only when both old and new values are literals of the same type, the attribute was observed at runtime, and initialization measurements show no import-time read. Unmapped settings, dictionaries, expressions, changed annotations and special attributes stay broad.
+Known fixtures retain every recorded reader, including all members of a class whose setup loads that fixture. A separate baseline pass records shared pytest fixture setup and finalizers in their actual class/module/session scope; this corrects dependencies previously attributed only to the first consuming test. The same expansion applies to function coverage, class users and attribute users. Without these scope measurements, whole-function and fixture reductions stay disabled. Unknown or empty fixture mappings keep the full inventory. A scalar class setting can use all class/attribute users only when both old and new values are literals of the same type, the attribute was observed at runtime, and initialization measurements show no import-time read. Unmapped settings, dictionaries, expressions, changed annotations and special attributes stay broad.
 
 Lambda definitions and calls can share a source line. Separate callable-entry measurements from baseline collection/imports distinguish them; callbacks actually invoked during initialization, and callbacks without complete call measurements, keep the full inventory.
 
@@ -44,7 +44,7 @@ The sample kit has 30 patches. The starter's simulated cost on this same set is 
 
 ## Rebuild baseline maps
 
-The **Rebuild baseline coverage** workflow supports separate coverage, type/value, import, and dictionary collection. The Docker image used for collection is the organizer's pinned Python image, with the supplied dependency lock. All collectors reject failed baseline runs.
+The **Rebuild baseline coverage** workflow supports separate coverage, type/value, import, shared fixture and dictionary collection. The Docker image used for collection is the organizer's pinned Python image, with the supplied dependency lock. All collectors reject failed baseline runs.
 
 ```sh
 python3 tools/fetch_baseline.py baseline
@@ -55,7 +55,8 @@ python3.13 -m venv .venv
 .venv/bin/python tools/collect_imports.py baseline profiles/imports.json
 .venv/bin/python tools/collect_children.py baseline profiles/children.json
 .venv/bin/python tools/collect_dicts.py baseline profiles/dicts.json
-.venv/bin/python tools/merge_maps.py maps/coverage.json profiles/types.json profiles/imports.json profiles/children.json profiles/dicts.json
+.venv/bin/python tools/collect_shared.py baseline profiles/shared.json
+.venv/bin/python tools/merge_maps.py maps/coverage.json profiles/types.json profiles/imports.json profiles/children.json profiles/dicts.json profiles/shared.json
 ```
 
 Create `profiles/` before running these local commands. [Provenance](maps/provenance.json) records the source pin and collection environments. The source archive is checksum-verified. Integration tests are enabled during collection. Raw coverage databases and profiling scratch files are not included in the submission image.

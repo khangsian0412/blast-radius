@@ -1,7 +1,7 @@
 {
   "baseline_commit": "eb11aec4be8cb2122afe713a4816662c3f0fb2fa",
   "baseline_archive_sha256": "93b2445f15f395b81c20556777ece19a6c7507df950f13fa9fac4a3be739af0d",
-  "coverage_sha256": "f2964be87a0ebef3307e68b6533e05ee7fd0995b6bfa590a2167f65964a416ff",
+  "coverage_sha256": "692df9bed3d4a3769baa3a71c35b8b9e817cf6f73d42a0ea4a9d70849a1ae02e",
   "container_image": "python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90",
   "measurements": [
     {
@@ -29,6 +29,18 @@
       "kind": "source-file reader dependencies",
       "environment": "linux/amd64",
       "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44906863298",
+      "baseline_only": true
+    },
+    {
+      "kind": "actual callable entry points during collection and imports",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44915474907",
+      "baseline_only": true
+    },
+    {
+      "kind": "shared pytest fixture setup/finalizer scope dependencies",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44916386013",
       "baseline_only": true
     }
   ],
