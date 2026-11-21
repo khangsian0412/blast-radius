@@ -7,3 +7,5 @@ output.jsonl
 validation.json
 *.log
 baseline/
+output-run*.jsonl
+benchmark.json
