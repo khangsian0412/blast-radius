@@ -126,12 +126,15 @@ def main():
 
     finder = install(root, lambda obj: None, attribute)
 
+    import_calls = {}
+
     def profile(frame, event, arg):
-        if event == "call" and finder.import_stack:
+        if event == "call":
             path = frame.f_code.co_filename
             if path.startswith(str(root / "sqlglot") + "/"):
                 dependency = Path(path).relative_to(root).as_posix()
-                consumer = module_files.get(finder.import_stack[-1])
+                import_calls.setdefault(dependency, set()).add(frame.f_code.co_firstlineno)
+                consumer = module_files.get(finder.import_stack[-1]) if finder.import_stack else None
                 if consumer and consumer != dependency:
                     dependencies.setdefault(dependency, set()).add(consumer)
 
@@ -162,6 +165,8 @@ def main():
         json.dumps(
             {
                 "import_lines": files,
+                "import_calls_complete": True,
+                "import_calls": {name: sorted(lines) for name, lines in import_calls.items()},
                 "class_dependencies_complete": True,
                 "attribute_dependencies_complete": True,
                 "attribute_value_dependencies": {

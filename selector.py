@@ -748,10 +748,62 @@ class Selector:
             bits = self.dependents(name) or self.all
         return bits
 
+    def runtime_literal_users(self, name, before, after, line):
+        """Keep all class users for an observed, runtime-only scalar setting.
+
+        Import-read fields, unobserved fields, special attributes, expressions,
+        dictionaries, changed annotations and new/deleted bindings stay broad.
+        """
+        parents = sorted(
+            (node for node in ast.walk(before) if isinstance(node, ast.ClassDef)
+             and node.lineno <= line <= node.end_lineno),
+            key=lambda node: node.lineno,
+        )
+        if not parents:
+            return None
+
+        def field(statement):
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
+                return statement.targets[0].id, statement.type_comment
+            if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                return statement.target.id, (ast.dump(statement.annotation), statement.simple)
+            return None
+
+        old = next((node for node in parents[-1].body if node.lineno <= line <= node.end_lineno), None)
+        binding = field(old)
+        if not binding or binding[0].startswith("_"):
+            return None
+        target = after
+        for parent in parents:
+            matches = [node for node in target.body if isinstance(node, ast.ClassDef) and node.name == parent.name]
+            if len(matches) != 1:
+                return None
+            target = matches[0]
+        matches = [node for node in target.body if type(node) is type(old) and field(node) == binding]
+        if len(matches) != 1:
+            return None
+        try:
+            previous = ast.literal_eval(old.value)
+            replacement = ast.literal_eval(matches[0].value)
+        except (ValueError, TypeError, SyntaxError):
+            return None
+        if type(previous) not in (bool, int, float, str, type(None)) or type(previous) is not type(replacement):
+            return None
+        module = name.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        key = module + "." + ".".join(parent.name for parent in parents)
+        attribute = key + "." + binding[0]
+        if attribute in self.map.get("attribute_init", ()):
+            return None
+        attribute_users = self.pool[self.map.get("attributes", {}).get(attribute, 0)]
+        class_users = self.pool[self.map.get("classes", {}).get(key, 0)]
+        if not attribute_users or not class_users:
+            return None
+        return attribute_users | class_users | self.range_mask(name, parents[-1].lineno, parents[-1].end_lineno)
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
-        Keep whole-module dependents for ordinary function-body replacements.
+        Keep whole-function coverage for ordinary function-body replacements.
         Source text, import-time state, fixtures and unmodeled changes can affect
         tests without executing an edited line, so they use the full inventory.
         No patched-test probe is allowed to remove this selection.
@@ -793,20 +845,33 @@ class Selector:
                     return self.all
                 functions = [
                     node for node in ast.walk(before)
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
                 ]
                 classes = [node for node in ast.walk(before) if isinstance(node, ast.ClassDef)]
                 initial = self.map["files"][name].get("init", ())
+                affected = 0
                 for line in removed:
                     owners = [node for node in functions if node.lineno <= line <= node.end_lineno]
                     if not owners:
-                        return self.all
+                        setting_users = self.runtime_literal_users(name, before, after, line)
+                        if setting_users is None:
+                            return self.all
+                        affected |= setting_users
+                        continue
                     owner = min(owners, key=lambda node: node.end_lineno - node.lineno)
-                    if line < owner.body[0].lineno or any(
-                        owner.body[0].lineno <= point <= owner.end_lineno for point in initial
-                    ):
+                    start = owner.body.lineno if isinstance(owner, ast.Lambda) else owner.body[0].lineno
+                    initialized = any(start <= point <= owner.end_lineno for point in initial)
+                    if isinstance(owner, ast.Lambda):
+                        # Defining a lambda and calling its body can share one
+                        # line number. Actual baseline call events distinguish
+                        # them; absent that measurement, retain the full suite.
+                        initialized = (
+                            not self.map.get("import_calls_complete")
+                            or owner.lineno in self.map.get("import_calls", {}).get(name, ())
+                        )
+                    if line < start or initialized:
                         return self.all
-                    first = owner.body[0]
+                    first = None if isinstance(owner, ast.Lambda) else owner.body[0]
                     if (
                         isinstance(first, ast.Expr)
                         and isinstance(first.value, ast.Constant)
@@ -818,10 +883,13 @@ class Selector:
                         return self.all
                     if any(
                         decorator.lineno <= line <= node.lineno
-                        for node in functions for decorator in node.decorator_list
+                        for node in functions for decorator in getattr(node, "decorator_list", ())
                     ):
                         return self.all
-                affected = self.dependents(name)
+                    function_users = self.range_mask(name, owner.lineno, owner.end_lineno)
+                    if not function_users:
+                        return self.all
+                    affected |= function_users
                 if not affected:
                     return self.all
                 result |= affected

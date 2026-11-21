@@ -36,8 +36,57 @@ class ConservativeTests(unittest.TestCase):
         selector = Selector(self.tests, None, self.root, map_data=self.data)
         return selector.select_conservative(diff(self.source, changed))
 
-    def test_body_edit_keeps_whole_module_and_inspectors(self):
+    def test_body_edit_keeps_function_callers_and_inspectors(self):
+        self.assertEqual(self.select(self.source.replace("return 1", "return 3")), 5)
+
+    def test_entire_function_coverage_is_kept_across_different_branches(self):
+        self.source = "def f(x):\n    if x:\n        return 1\n    return 2\n"
+        self.data["files"][self.name]["lines"] = {"3": 1, "4": 2}
         self.assertEqual(self.select(self.source.replace("return 1", "return 3")), 7)
+
+    def test_multiline_callback_body_uses_function_coverage(self):
+        self.source = "class Example:\n    CALLBACK = lambda value: (\n        value + 1\n    )\n"
+        self.data["files"][self.name] = {"lines": {"3": 1}, "init": [2]}
+        self.data["import_calls_complete"] = True
+        self.data["import_calls"] = {}
+        self.assertEqual(self.select(self.source.replace("value + 1", "value + 2")), 5)
+
+    def test_callback_executed_during_import_keeps_every_test(self):
+        self.source = "class Example:\n    CALLBACK = lambda value: (\n        value + 1\n    )\n"
+        self.data["files"][self.name] = {"lines": {"3": 1}, "init": [2, 3]}
+        self.data["import_calls_complete"] = True
+        self.data["import_calls"] = {self.name: [2]}
+        self.assertEqual(self.select(self.source.replace("value + 1", "value + 2")), 15)
+
+    def test_callback_without_call_measurements_keeps_every_test(self):
+        self.source = "class Example:\n    CALLBACK = lambda value: (\n        value + 1\n    )\n"
+        self.data["files"][self.name] = {"lines": {"3": 1}, "init": [2]}
+        self.assertEqual(self.select(self.source.replace("value + 1", "value + 2")), 15)
+
+    def runtime_setting(self):
+        self.source = "class Example:\n    VALUE = 1\n"
+        self.data["attributes"] = {"sqlglot.example.Example.VALUE": 1}
+        self.data["classes"] = {"sqlglot.example.Example": 2}
+        self.data["files"][self.name]["lines"] = {"2": 1}
+
+    def test_runtime_scalar_retains_all_class_and_attribute_users(self):
+        self.runtime_setting()
+        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 7)
+
+    def test_scalar_read_during_import_is_not_narrowed(self):
+        self.runtime_setting()
+        self.data["attribute_init"] = ["sqlglot.example.Example.VALUE"]
+        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
+
+    def test_new_setting_type_or_expression_is_not_narrowed(self):
+        self.runtime_setting()
+        for replacement in ('"changed"', '1 + 1'):
+            self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = " + replacement)), 15)
+
+    def test_missing_class_usage_prevents_runtime_setting_reduction(self):
+        self.runtime_setting()
+        self.data["classes"] = {}
+        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
 
     def test_comment_can_change_observable_code_metadata(self):
         changed = "# a seemingly harmless comment\n" + self.source
