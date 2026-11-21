@@ -4,6 +4,23 @@ A submission for the [Blast Radius buildathon track](https://www.joinbuilders.or
 
 The runtime is Python standard library only. It does not execute patches, install packages, access the network, or write to disk. All logs go to stderr; stdout contains only the required JSON lines.
 
+## Validation results
+
+All 30 supplied sample commits are accepted by the official scorer with **zero missed commits**.
+
+| Measure | Result |
+| --- | ---: |
+| Starter simulated cost | 1,614.120 seconds |
+| This selector's simulated cost | **186.316 seconds** |
+| Reduction in simulated cost | **88.5%** |
+| Unit tests | 20 passed |
+| Three container runs | Identical JSON output |
+| Container CPU per sample batch | About 0.8 seconds |
+| Peak memory | About 47 MiB |
+| JSON output | 4,399 bytes |
+
+CPU and memory come from the Linux verification workflow's measurement wrapper. The official score adds runtime CPU and is evaluated on hidden patches; **186.316 is the sample simulated cost**, not an official leaderboard score.
+
 ## Approach
 
 1. Collect per-test line coverage, fixture reads and class-construction dependencies from the unmodified pinned baseline. Record unittest class setup dependencies for every test in that class. Inline process-pool tasks during collection with their pickle round trips preserved, so spawned work and serialization do not disappear from coverage.
@@ -36,7 +53,7 @@ No dependencies are required for selection or the unit tests. The exact scoring 
 
 ## Rebuild the coverage map
 
-The **Rebuild baseline coverage** GitHub Actions workflow collects coverage inside the organizer's exact Linux image and uploads `baseline-coverage`. This workflow is separate from image builds: normal image builds download only the pinned sqlglot source and use the committed map.
+The **Rebuild baseline coverage** GitHub Actions workflow collects coverage inside the organizer's exact Linux image and uploads `baseline-coverage`. The committed map was collected in that environment: **1,620 tests and 25,440 subtests passed, with one test skipped**. [Collection provenance](maps/provenance.json) records the source, image, generating commit, workflow run and artifact hash. This workflow is separate from image builds: normal image builds download only the pinned sqlglot source and use the committed map.
 
 Locally, using Python 3.13:
 
@@ -53,7 +70,7 @@ Collection must finish without baseline test failures. Do not collect from patch
 
 Submit this public repository URL and the full commit SHA of a green **Verify submission** run. The repository-root Dockerfile is the submission entry point. No release, hosted service, API key or secret is needed.
 
-The verification workflow runs unit tests and the actual Linux container under runtime limits, then requires valid output and zero missed sample commits. Its artifact includes the output and validation report.
+The verification workflow runs unit tests and the actual Linux container under runtime limits, then requires valid output and zero missed sample commits. It also checks three deterministic runs within the 180-second limit. Its artifact includes the output, validation report and runtime measurements.
 
 ## Limitations
 
