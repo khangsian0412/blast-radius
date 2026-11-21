@@ -15,6 +15,7 @@ import operator
 from pathlib import Path, PurePosixPath
 import re
 import sys
+import types
 
 BASELINE = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 HERE = Path(__file__).resolve().parent
@@ -190,6 +191,7 @@ class Selector:
         self.always = self.pool[self.map.get("always", 0)]
         self.file_cache = {}
         self.tree_cache = {}
+        self.code_cache = {}
         self.line_cache = {}
         self.file_masks = {}
         self.imports = None
@@ -257,6 +259,10 @@ class Selector:
                         candidate = module.replace(".", "/")
                         for imported in (candidate + ".py", candidate + "/__init__.py"):
                             reverse.setdefault(imported, set()).add(rel)
+            for dependency, consumers in self.map.get(
+                "import_dependencies", {}
+            ).items():
+                reverse.setdefault(dependency, set()).update(consumers)
             self.imports = reverse
         visited = {name}
         todo = [name]
@@ -266,6 +272,15 @@ class Selector:
                     visited.add(dependent)
                     todo.append(dependent)
         bits = union(self.file_mask(path) for path in visited)
+        for path in visited:
+            module = (
+                path.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+            )
+            bits |= union(
+                self.pool[index]
+                for key, index in self.map.get("classes", {}).items()
+                if key.startswith(module + ".")
+            )
         for i, test in enumerate(self.tests):
             if test["file"] in visited:
                 bits |= 1 << i
@@ -420,7 +435,36 @@ class Selector:
         ]
         if not changed:
             return None
-        return union(self.pool[record["reads"].get(key, 0)] for key in changed)
+        reads = union(self.pool[record["reads"].get(key, 0)] for key in changed)
+        # A value read during a lazy import can feed a cached configuration.
+        # Only the stronger no-value-read proof bypasses ordinary dependencies.
+        return None if reads else 0
+
+    def binding_signatures(self, tree, name):
+        compiled = compile(tree, name, "exec", dont_inherit=True)
+        signatures = {}
+        pending = [(compiled, ())]
+        while pending:
+            code, path = pending.pop()
+            if code.co_name != "<module>":
+                signatures[path] = (
+                    code.co_qualname,
+                    code.co_varnames,
+                    code.co_cellvars,
+                    code.co_freevars,
+                    code.co_argcount,
+                    code.co_posonlyargcount,
+                    code.co_kwonlyargcount,
+                    code.co_flags,
+                )
+            children = [
+                value for value in code.co_consts if isinstance(value, types.CodeType)
+            ]
+            pending.extend(
+                (value, path + ((value.co_name, ordinal),))
+                for ordinal, value in enumerate(children)
+            )
+        return signatures
 
     def python_change(self, change: FileChange) -> int:
         name = change.old
@@ -434,6 +478,12 @@ class Selector:
         if self.equivalent(name, before, after):
             self.reasons.append(f"{name}: equivalent Python syntax/typed operations")
             return 0
+        if name not in self.code_cache:
+            self.code_cache[name] = self.binding_signatures(before, name)
+        if self.code_cache[name] != self.binding_signatures(after, name):
+            # A new local binding or yield can change earlier code in the same
+            # function, even when the edited statement was never reached.
+            return self.all
         if inserted:
             # A new definition can run decorators/defaults during import or
             # override an inherited method without executing either old anchor.
@@ -443,7 +493,7 @@ class Selector:
         functions = [
             node
             for node in ast.walk(before)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
         ]
         statements = [node for node in ast.walk(before) if isinstance(node, ast.stmt)]
         changed = set(deleted)
@@ -460,12 +510,24 @@ class Selector:
             # Default values, decorators and signatures run when a function is
             # defined, not when its body is called.
             body_owners = [
-                node for node in containing if node.body and line >= node.body[0].lineno
+                node
+                for node in containing
+                if (isinstance(node, ast.Lambda) and line >= node.body.lineno)
+                or (
+                    not isinstance(node, ast.Lambda)
+                    and node.body
+                    and line >= node.body[0].lineno
+                )
             ]
             if not body_owners:
                 import_time_lines.append(line)
                 continue
             owner = min(body_owners, key=lambda node: node.end_lineno - node.lineno)
+            if any(
+                owner.lineno <= point <= owner.end_lineno
+                for point in self.map["files"].get(name, {}).get("init", ())
+            ):
+                bits |= self.dependents(name)
             direct = executable.get(line, 0)
             if not direct:
                 covering = [
@@ -591,6 +653,8 @@ class Selector:
                     class_bits |= self.range_mask(
                         name, target.lineno, target.end_lineno
                     )
+                    if any(field in init_reads for field in field_keys):
+                        class_bits |= self.dependents(name)
                     bits |= class_bits or self.dependents(name)
             else:
                 bits |= self.dependents(name)

@@ -200,7 +200,7 @@ class Verifier:
                 "collect": collect,
                 "tests": targets,
                 "plans": plans,
-                "cpu_budget": min(1.25, max(0.25, self.cpu_budget - self.cpu_used)),
+                "cpu_budget": min(float(os.environ.get("BLAST_TEST_CPU_SECONDS", "1.25")), max(0.25, self.cpu_budget - self.cpu_used)),
             }
             start = resource.getrusage(resource.RUSAGE_CHILDREN)
             with tempfile.TemporaryDirectory(prefix="blast-") as temporary:
@@ -228,18 +228,10 @@ class Verifier:
             self.last_report = report
             if collect and not report.get("collection_ok"):
                 failed_files = set(report.get("collection_errors", ()))
-                known_files = {t["file"] for t in self.tests}
-                if not failed_files or not failed_files <= known_files:
-                    selected = self.selector.all
-                else:
-                    selected |= union(
-                        1 << i
-                        for i, test in enumerate(self.tests)
-                        if test["file"] in failed_files
-                    )
-                self.log.append(
-                    f"import errors in {len(failed_files)} test files; expanded selection"
-                )
+                # Import failures can leave registries and partially initialized
+                # modules inconsistent beyond the files pytest reports directly.
+                selected = self.selector.all
+                self.log.append(f"import errors in {len(failed_files)} test files; all tests retained")
             passed = set(report.get("passed", ())) & set(targets)
             for i in list(iter_bits(selected)):
                 if self.tests[i]["id"] in passed:

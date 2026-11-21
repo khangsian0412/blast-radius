@@ -53,6 +53,7 @@ def install(
     root: Path, record_class, record_attribute, record_type=None, record_value=None
 ):
     names = declaration_names(root)
+    import_stack = []
 
     def read(obj, name):
         value = getattr(obj, name)
@@ -187,7 +188,11 @@ def install(
                 __blast_class_use__=record_class,
                 __blast_operand_type__=operand,
             )
-            super().exec_module(module)
+            import_stack.append(module.__name__)
+            try:
+                super().exec_module(module)
+            finally:
+                import_stack.pop()
 
     class Finder(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):
@@ -204,5 +209,6 @@ def install(
             return spec
 
     finder = Finder()
+    finder.import_stack = import_stack
     sys.meta_path.insert(0, finder)
     return finder

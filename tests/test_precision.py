@@ -299,7 +299,7 @@ class PrecisionTests(unittest.TestCase):
             self.selector().select(
                 diff(self.source, self.source.replace("'x': 1", "'x': 3"))
             ),
-            1,
+            3,
         )
 
     def test_dictionary_key_changes_cannot_use_value_read_proof(self):
@@ -350,6 +350,80 @@ class PrecisionTests(unittest.TestCase):
                 1,
             )
             run.assert_not_called()
+
+    def test_generator_conversion_changes_all_calls(self):
+        self.source = "def f(a):\n    if a:\n        return 0\n    return 1\n"
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 3, "3": 1, "4": 2}
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("return 1", "yield 1"))
+            ),
+            3,
+        )
+
+    def test_a_new_definition_cannot_be_inferred_from_old_anchors(self):
+        self.source = "class Example:\n    FLAGS = {'x': 1}\n"
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["dictionaries"] = {
+            "sqlglot.example.Example.FLAGS": {
+                "keys": ["x"],
+                "unsafe": False,
+                "reads": {},
+            }
+        }
+        modified = (
+            self.source
+            + "    def new(self, value=missing_name):\n        return value\n"
+        )
+        self.assertEqual(self.selector().select(diff(self.source, modified)), 3)
+
+    def test_annotation_only_field_does_not_crash_dictionary_analysis(self):
+        self.source = "class Example:\n    value: int\n"
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 3}
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("value: int", "value: str"))
+            ),
+            3,
+        )
+
+    def test_cached_lambda_uses_its_body_coverage(self):
+        self.source = (
+            "class Example:\n    HANDLERS = {'f': lambda x: (\n        x + 1\n    )}\n"
+        )
+        (self.root / self.name).write_text(self.source)
+        self.data["files"][self.name]["lines"] = {"2": 1, "3": 2}
+        self.data["classes"] = {"sqlglot.example.Example": 1}
+        self.data["attributes"] = {"sqlglot.example.Example.HANDLERS": 1}
+        self.data["attribute_init"] = []
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("x + 1", "x + 2"))
+            ),
+            2,
+        )
+
+    def test_import_dependency_includes_unrelated_consumer_class(self):
+        self.source = "class Example:\n    FLAG = 1\n"
+        (self.root / self.name).write_text(self.source)
+        (self.root / "sqlglot/consumer.py").write_text("class Consumer: pass\n")
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["classes"] = {
+            "sqlglot.example.Example": 1,
+            "sqlglot.consumer.Consumer": 2,
+        }
+        self.data["attributes"] = {"sqlglot.example.Example.FLAG": 1}
+        self.data["attribute_init"] = ["sqlglot.example.Example.FLAG"]
+        self.data["import_dependencies"] = {self.name: ["sqlglot/consumer.py"]}
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("FLAG = 1", "FLAG = 2"))
+            ),
+            3,
+        )
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ on:
       kind:
         description: Baseline measurements to rebuild
         type: choice
-        options: [all, coverage, profiles, types, dictionaries]
+        options: [all, coverage, profiles, types, dictionaries, imports]
         default: all
 permissions:
   contents: read
@@ -23,10 +23,15 @@ jobs:
         if: inputs.kind == 'all' || inputs.kind == 'coverage'
         run: docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect.py baseline maps/coverage.json --raw /workspace/coverage.raw
       - name: Collect type, import and subprocess profiles
-        if: inputs.kind != 'coverage' && inputs.kind != 'dictionaries'
+        if: inputs.kind != 'coverage' && inputs.kind != 'dictionaries' && inputs.kind != 'imports'
         run: |
           mkdir -p profiles
           docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json'
+      - name: Collect expanded import dependencies
+        if: inputs.kind == 'imports'
+        run: |
+          mkdir -p profiles
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_imports.py baseline profiles/imports.json
       - name: Collect literal dictionary reads
         if: inputs.kind == 'all' || inputs.kind == 'profiles' || inputs.kind == 'dictionaries'
         run: |

@@ -23,13 +23,14 @@ def main():
     sys.path.insert(0, str(root))
     os.environ["SKIP_INTEGRATION"] = "0"
     active = [None]
+    importing = [0]
     records = {}
 
     def observe(origin, key=None, escape=False):
         record = records[origin]
         if record["unsafe"]:
             return
-        if escape or not active[0]:
+        if escape or not active[0] or importing[0]:
             record["unsafe"] = True
             record["reads"].clear()
             return
@@ -321,7 +322,11 @@ def main():
                 __blast_call__=call,
                 __blast_compare__=comparison,
             )
-            super().exec_module(module)
+            importing[0] += 1
+            try:
+                super().exec_module(module)
+            finally:
+                importing[0] -= 1
 
     class Finder(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):

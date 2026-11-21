@@ -8,6 +8,7 @@ Unknown tasks always execute. A timeout or uncertain result never removes a test
 from __future__ import annotations
 import concurrent.futures
 import contextlib
+import importlib
 import importlib.abc
 import importlib.machinery
 import json
@@ -193,11 +194,34 @@ def main():
     ]
     with contextlib.redirect_stdout(Discard()), contextlib.redirect_stderr(Discard()):
         if request.get("collect"):
-            code = pytest.main(
-                ["tests", "--collect-only", "--continue-on-collection-errors", *common],
-                plugins=[plugin],
-            )
-            collection_ok = code == 0 and not collection_errors
+            module_error = False
+            for name in overrides:
+                if name.startswith("sqlglot/") and name.endswith(".py"):
+                    module = (
+                        name.removesuffix(".py")
+                        .replace("/", ".")
+                        .removesuffix(".__init__")
+                    )
+                    if module.endswith(".__main__"):
+                        continue
+                    try:
+                        importlib.import_module(module)
+                    except BaseException:
+                        collection_errors.add(f"<module:{module}>")
+                        module_error = True
+            if module_error:
+                collection_ok = False
+            else:
+                code = pytest.main(
+                    [
+                        "tests",
+                        "--collect-only",
+                        "--continue-on-collection-errors",
+                        *common,
+                    ],
+                    plugins=[plugin],
+                )
+                collection_ok = code == 0 and not collection_errors
         if collection_ok and request.get("tests"):
 
             def expire(signum, frame):

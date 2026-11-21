@@ -61,6 +61,8 @@ def main():
                     reads[key] = intern(bits)
                 dictionaries[origin] = {**record, "reads": reads}
             data["dictionaries"] = dictionaries
+        if 'import_attributes' in extra:
+            data['attribute_init'] = sorted(set(data.get('attribute_init', ())) | set(extra.pop('import_attributes')))
         data.update(extra)
     data["pool"] = [format(bits, "x") for bits in pool]
     target.write_text(json.dumps(data, separators=(",", ":")) + "\n")
