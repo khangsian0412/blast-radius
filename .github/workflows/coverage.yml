@@ -1,0 +1,19 @@
+name: Rebuild baseline coverage
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned baseline
+        run: python3 tools/fetch_baseline.py baseline
+      - name: Collect in the organizer's Python image
+        run: |
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace -e SKIP_INTEGRATION=0 python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 sh -c 'pip install --no-cache-dir -r tools/requirements.lock coverage==7.13.5 && python tools/collect.py baseline maps/coverage.json'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-coverage
+          path: maps/coverage.json

@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!selector.py
+!maps/
+!maps/**
+!tools/
+!tools/fetch_baseline.py
