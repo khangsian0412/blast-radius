@@ -21,7 +21,9 @@ def main():
     with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as source:
         for member in source:
             parts = PurePosixPath(member.name).parts[1:]
-            if not parts or member.isdir():
+            # The pinned archive includes CLAUDE.md -> AGENTS.md. Analysis
+            # does not need documentation symlinks; never create archive links.
+            if not parts or member.isdir() or member.issym() or member.islnk():
                 continue
             if not member.isfile() or '..' in parts:
                 raise SystemExit('Unexpected archive member')
