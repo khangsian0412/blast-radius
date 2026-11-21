@@ -16,9 +16,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--raw", type=Path)
     args = parser.parse_args()
     root = args.source.resolve()
     output = args.output.resolve()
+    raw = args.raw.resolve() if args.raw else None
     os.chdir(root)
     sys.path.insert(0, str(root))
     os.environ["SKIP_INTEGRATION"] = "0"
@@ -33,6 +35,11 @@ def main():
     class_keys = {}
     untraced = set()
     class_contexts = {}
+    attribute_reads = {}
+    attribute_init = set()
+    task_counts = {}
+    task_contexts = set()
+    class_seen = {}
     prefix = str(root) + "/"
 
     def audit(event, values):
@@ -50,9 +57,41 @@ def main():
 
     sys.addaudithook(audit)
     cov = coverage.Coverage(
-        source=[str(root / "sqlglot"), str(root / "tests")], data_file=None
+        source=[str(root / "sqlglot"), str(root / "tests")],
+        data_file=str(raw) if raw else None,
     )
     cov.start()
+
+    from instrument import install, attribute_owner
+
+    def record_class(obj):
+        context = active[0]
+        if not context:
+            return
+        cls = obj if isinstance(obj, type) else type(obj)
+        seen = class_seen.setdefault(context, set())
+        cls_id = id(cls)
+        if cls_id in seen:
+            return
+        seen.add(cls_id)
+        if cls_id not in class_keys:
+            class_keys[cls_id] = tuple(
+                f"{parent.__module__}.{parent.__qualname__}"
+                for parent in cls.__mro__
+                if parent.__module__.startswith("sqlglot")
+            )
+        class_reads.setdefault(context, set()).update(class_keys[cls_id])
+
+    def record_attribute(obj, name):
+        key = attribute_owner(obj, name)
+        if key:
+            context = active[0]
+            if context:
+                attribute_reads.setdefault(key, set()).add(context)
+            if not context or context.startswith("@class:"):
+                attribute_init.add(key)
+
+    install(root, record_class, record_attribute)
 
     # Preserve task argument/result serialization while running pool tasks in the
     # calling thread. Otherwise spawn workers lose the active test's coverage.
@@ -73,9 +112,21 @@ def main():
                     self.initialized = True
                     if self.initializer:
                         self.initializer(*self.initargs)
-                fn, args, kwargs = pickle.loads(pickle.dumps((fn, args, kwargs)))
-                value = fn(*args, **kwargs)
-                future.set_result(pickle.loads(pickle.dumps(value)))
+                previous = active[0]
+                root_context = previous or "@collection"
+                ordinal = task_counts.get(root_context, 0)
+                task_counts[root_context] = ordinal + 1
+                tag = f"{root_context}@@task:{ordinal}"
+                task_contexts.add(tag)
+                active[0] = tag
+                cov.switch_context(tag)
+                try:
+                    fn, args, kwargs = pickle.loads(pickle.dumps((fn, args, kwargs)))
+                    value = fn(*args, **kwargs)
+                    future.set_result(pickle.loads(pickle.dumps(value)))
+                finally:
+                    active[0] = previous
+                    cov.switch_context(previous or "")
             except BaseException as error:
                 future.set_exception(error)
             return future
@@ -90,36 +141,6 @@ def main():
             self.shutdown()
 
     concurrent.futures.ProcessPoolExecutor = TracedPool
-
-    # Capture dependencies on class constants which execute only at import time.
-    from sqlglot.expressions.core import Expr
-    from sqlglot.dialects.dialect import Dialect
-    from sqlglot.parser import Parser
-    from sqlglot.generator import Generator
-    from sqlglot.tokens import Tokenizer
-    import functools
-
-    def instrument_init(base):
-        original = base.__init__
-
-        @functools.wraps(original)
-        def traced(self, *args, **kwargs):
-            context = active[0]
-            if context:
-                cls = type(self)
-                if cls not in class_keys:
-                    class_keys[cls] = tuple(
-                        f"{parent.__module__}.{parent.__qualname__}"
-                        for parent in cls.__mro__
-                        if parent.__module__.startswith("sqlglot")
-                    )
-                class_reads.setdefault(context, set()).update(class_keys[cls])
-            original(self, *args, **kwargs)
-
-        base.__init__ = traced
-
-    for base in (Expr, Dialect, Parser, Generator, Tokenizer):
-        instrument_init(base)
 
     class Plugin:
         def pytest_collection_modifyitems(self, items):
@@ -172,6 +193,8 @@ def main():
         raise SystemExit(
             f"Baseline test run failed (pytest exit {result}); refusing to publish coverage"
         )
+    if raw:
+        cov.save()
     data = cov.get_data()
     ids = sorted(set(collected))
     index = {name: i for i, name in enumerate(ids)}
@@ -181,6 +204,7 @@ def main():
     def intern(contexts):
         bits = 0
         for context in contexts:
+            context = context.split("@@task:", 1)[0]
             for name in class_contexts.get(context, [context]):
                 if name in index:
                     bits |= 1 << index[name]
@@ -188,6 +212,24 @@ def main():
             pool_index[bits] = len(pool)
             pool.append(bits)
         return pool_index[bits]
+
+    task_ids = sorted(
+        task_contexts,
+        key=lambda tag: (tag.split("@@task:")[0], int(tag.split("@@task:")[1])),
+    )
+    task_index = {name: i for i, name in enumerate(task_ids)}
+    task_pool = [0]
+    task_pool_index = {0: 0}
+
+    def intern_tasks(contexts):
+        bits = 0
+        for context in contexts:
+            if context in task_index:
+                bits |= 1 << task_index[context]
+        if bits not in task_pool_index:
+            task_pool_index[bits] = len(task_pool)
+            task_pool.append(bits)
+        return task_pool_index[bits]
 
     files = {}
     for name in sorted(data.measured_files()):
@@ -200,9 +242,26 @@ def main():
             for line, contexts in data.contexts_by_lineno(name).items()
         }
         lines = {k: v for k, v in lines.items() if v}
+        task_lines = {
+            str(line): intern_tasks(contexts)
+            for line, contexts in data.contexts_by_lineno(name).items()
+        }
         files[rel] = {
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "lines": lines,
+            "tasks": {line: value for line, value in task_lines.items() if value},
+            "outside": {
+                str(line): intern(
+                    [context for context in contexts if "@@task:" not in context]
+                )
+                for line, contexts in data.contexts_by_lineno(name).items()
+                if any(context and "@@task:" not in context for context in contexts)
+            },
+            "init": [
+                line
+                for line, contexts in data.contexts_by_lineno(name).items()
+                if "" in contexts
+            ],
         }
     fixture_reads = {name: intern(contexts) for name, contexts in sorted(reads.items())}
     uses = {}
@@ -210,12 +269,22 @@ def main():
         for key in keys:
             uses.setdefault(key, set()).add(context)
     classes = {key: intern(contexts) for key, contexts in sorted(uses.items())}
+    attributes = {
+        key: intern(contexts) for key, contexts in sorted(attribute_reads.items())
+    }
+    attribute_tasks = {
+        key: intern_tasks(contexts) for key, contexts in sorted(attribute_reads.items())
+    }
+    class_tasks = {
+        key: intern_tasks(contexts) for key, contexts in sorted(uses.items())
+    }
     always = intern(untraced | {name for name in ids if outcomes.get(name) != "passed"})
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         json.dumps(
             {
-                "schema": 1,
+                "schema": 2,
+                "outside_complete": True,
                 "baseline": BASELINE,
                 "tests": ids,
                 "pool": [format(bits, "x") for bits in pool],
@@ -223,6 +292,30 @@ def main():
                 "fixtures": fixture_reads,
                 "classes": classes,
                 "always": always,
+                "attributes": attributes,
+                "attribute_tasks": attribute_tasks,
+                "attribute_init": sorted(attribute_init),
+                "class_tasks": class_tasks,
+                "attributes_outside": {
+                    key: intern(
+                        [context for context in contexts if "@@task:" not in context]
+                    )
+                    for key, contexts in sorted(attribute_reads.items())
+                },
+                "classes_outside": {
+                    key: intern(
+                        [context for context in contexts if "@@task:" not in context]
+                    )
+                    for key, contexts in sorted(uses.items())
+                },
+                "task_ids": [
+                    {
+                        "test": tag.split("@@task:")[0],
+                        "ordinal": int(tag.split("@@task:")[1]),
+                    }
+                    for tag in task_ids
+                ],
+                "task_pool": [format(bits, "x") for bits in task_pool],
                 "collection": {
                     "exit_code": int(result),
                     "python": sys.version.split()[0],

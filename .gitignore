@@ -9,3 +9,5 @@ validation.json
 baseline/
 output-run*.jsonl
 benchmark.json
+profiles/
+*.raw

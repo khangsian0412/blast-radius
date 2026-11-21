@@ -5,3 +5,6 @@
 !maps/**
 !tools/
 !tools/fetch_baseline.py
+!verification.py
+!probe.py
+!tools/requirements.lock

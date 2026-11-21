@@ -1,5 +1,12 @@
 name: Rebuild baseline coverage
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: Baseline measurements to rebuild
+        type: choice
+        options: [all, coverage, profiles]
+        default: all
 permissions:
   contents: read
 jobs:
@@ -10,10 +17,25 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fetch pinned baseline
         run: python3 tools/fetch_baseline.py baseline
-      - name: Collect in the organizer's Python image
+      - name: Prepare exact baseline environment
+        run: docker build --platform linux/amd64 -f tools/Dockerfile.maps -t blast-maps .
+      - name: Collect line, class, attribute and task coverage
+        if: inputs.kind != 'profiles'
+        run: docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect.py baseline maps/coverage.json --raw /workspace/coverage.raw
+      - name: Collect type, import and subprocess profiles
+        if: inputs.kind != 'coverage'
         run: |
-          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace -e SKIP_INTEGRATION=0 python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 sh -c 'pip install --no-cache-dir -r tools/requirements.lock coverage==7.13.5 && python tools/collect.py baseline maps/coverage.json'
+          mkdir -p profiles
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps sh -c 'python tools/collect_types.py baseline profiles/types.json && python tools/collect_imports.py baseline profiles/imports.json && python tools/collect_children.py baseline profiles/children.json'
       - uses: actions/upload-artifact@v4
+        if: inputs.kind != 'profiles'
         with:
           name: baseline-coverage
-          path: maps/coverage.json
+          path: |
+            maps/coverage.json
+            coverage.raw
+      - uses: actions/upload-artifact@v4
+        if: inputs.kind != 'coverage'
+        with:
+          name: baseline-profiles
+          path: profiles/*.json

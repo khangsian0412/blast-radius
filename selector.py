@@ -113,20 +113,31 @@ def apply_change(source: str, change: FileChange) -> tuple[str, set[int], set[in
             raise ValueError("overlapping or out-of-range hunk")
         result.extend(original[cursor:start])
         cursor = start
+        pending_additions = set()
+        pending_deletion = False
         for line in body:
             kind, value = line[0], line[1:]
+            if kind == " ":
+                if not pending_deletion:
+                    insertions.update(pending_additions)
+                pending_additions.clear()
+                pending_deletion = False
             if kind in " -":
                 if cursor >= len(original) or original[cursor] != value:
                     raise ValueError("patch does not match the pinned baseline")
                 if kind == "-":
                     deleted.add(cursor + 1)
+                    pending_deletion = True
                 else:
                     result.append(value)
                 cursor += 1
             else:
                 result.append(value)
-                # Insertions affect the control flow on both sides of this gap.
-                insertions.add(cursor)
+                # Only a pure insertion needs neighboring anchors. A replacement
+                # is already represented by the old lines it deletes.
+                pending_additions.add(cursor)
+        if not pending_deletion:
+            insertions.update(pending_additions)
     result.extend(original[cursor:])
     return "".join(result), deleted, insertions
 
@@ -146,11 +157,15 @@ def union(values):
 
 
 class Selector:
-    def __init__(self, tests: list[dict], map_path: Path, source: Path):
+    def __init__(
+        self, tests: list[dict], map_path: Path | None, source: Path, *, map_data=None
+    ):
         self.tests = tests
         self.source = source
         self.all = (1 << len(tests)) - 1
-        self.map = json.loads(map_path.read_text())
+        self.map = (
+            map_data if map_data is not None else json.loads(map_path.read_text())
+        )
         if self.map.get("baseline") != BASELINE:
             raise ValueError("coverage baseline mismatch")
         by_id = {test["id"]: i for i, test in enumerate(tests)}
@@ -161,13 +176,16 @@ class Selector:
         )
         # Coverage is indexed by node ID, never by the organizer's test number.
         self.pool = []
-        for encoded in self.map["pool"]:
-            translated = 0
-            for index in iter_bits(int(encoded, 16)):
-                target = translate[index]
-                if target is not None:
-                    translated |= 1 << target
-            self.pool.append(translated)
+        if self.map["tests"] == [test["id"] for test in tests]:
+            self.pool = [int(encoded, 16) for encoded in self.map["pool"]]
+        else:
+            for encoded in self.map["pool"]:
+                translated = 0
+                for index in iter_bits(int(encoded, 16)):
+                    target = translate[index]
+                    if target is not None:
+                        translated |= 1 << target
+                self.pool.append(translated)
         self.always = self.pool[self.map.get("always", 0)]
         self.file_cache = {}
         self.tree_cache = {}
@@ -252,6 +270,83 @@ class Selector:
                 bits |= 1 << i
         return bits
 
+    def equivalent(self, name, before, after):
+        """Prove identity/equality rewrites from baseline operand type domains.
+
+        Stored facts contain only types observed on the unmodified baseline.
+        No changed operation, patch, failing-test label, or mutant result is stored.
+        Unknown/custom equality always prevents the proof.
+        """
+        pending = [(before, after)]
+        facts = self.map.get("types", {})
+        profiles = self.map.get("type_profiles", {})
+        while pending:
+            old, new = pending.pop()
+            if (
+                isinstance(old, ast.Compare)
+                and isinstance(new, ast.Compare)
+                and len(old.ops) == len(new.ops) == 1
+            ):
+                pair = (type(old.ops[0]), type(new.ops[0]))
+                if pair in {
+                    (ast.Is, ast.Eq),
+                    (ast.Eq, ast.Is),
+                    (ast.IsNot, ast.NotEq),
+                    (ast.NotEq, ast.IsNot),
+                }:
+                    domains = profiles.get(
+                        f"{name}:{old.lineno}:{old.col_offset}", [[], []]
+                    )
+                    positive = pair in {(ast.Is, ast.Eq), (ast.Eq, ast.Is)}
+                    equality_key = (
+                        "default_equality" if positive else "identity_equality"
+                    )
+                    enum_key = "enum_identity" if positive else "enum_inequality"
+
+                    def compatible(a, b):
+                        left, right = facts.get(a, {}), facts.get(b, {})
+                        left_identity = left.get(equality_key) or (
+                            a == "builtins.NoneType" and left.get("singleton")
+                        )
+                        right_identity = right.get(equality_key) or (
+                            b == "builtins.NoneType" and right.get("singleton")
+                        )
+                        return bool(
+                            (left_identity and right_identity)
+                            or (
+                                a == b
+                                and (
+                                    (left.get("singleton") and right.get("singleton"))
+                                    or (left.get(enum_key) and right.get(enum_key))
+                                )
+                            )
+                        )
+
+                    if (
+                        domains[0]
+                        and domains[1]
+                        and all(
+                            compatible(a, b) for a in domains[0] for b in domains[1]
+                        )
+                    ):
+                        new.ops = [type(old.ops[0])()]
+            if (
+                isinstance(old, ast.AST)
+                and isinstance(new, ast.AST)
+                and type(old) is type(new)
+            ):
+                for field in old._fields:
+                    a, b = getattr(old, field, None), getattr(new, field, None)
+                    if isinstance(a, ast.AST) and isinstance(b, ast.AST):
+                        pending.append((a, b))
+                    elif (
+                        isinstance(a, list) and isinstance(b, list) and len(a) == len(b)
+                    ):
+                        pending.extend(zip(a, b))
+        return ast.dump(before, include_attributes=False) == ast.dump(
+            after, include_attributes=False
+        )
+
     def python_change(self, change: FileChange) -> int:
         name = change.old
         old = self.read(name)
@@ -261,10 +356,8 @@ class Selector:
             after = ast.parse(new.encode("utf-8"), type_comments=True)
         except (SyntaxError, ValueError):
             return self.all  # Import failure can break collection of many modules.
-        if ast.dump(before, include_attributes=False) == ast.dump(
-            after, include_attributes=False
-        ):
-            self.reasons.append(f"{name}: unchanged Python syntax tree")
+        if self.equivalent(name, before, after):
+            self.reasons.append(f"{name}: equivalent Python syntax/typed operations")
             return 0
 
         executable = self.lines(name)
@@ -310,6 +403,11 @@ class Selector:
                         break
             if not direct:
                 direct = self.range_mask(name, owner.lineno, owner.end_lineno)
+                if not direct and any(
+                    owner.lineno <= entry <= owner.end_lineno
+                    for entry in self.map["files"].get(name, {}).get("init", ())
+                ):
+                    return self.all
             # Changing a late operand can make a previously short-circuited
             # expression run. Cover the entry to every containing Boolean test.
             for node in ast.walk(owner):
@@ -329,9 +427,38 @@ class Selector:
             if parents:
                 key = module + "." + ".".join(node.name for node in parents)
                 target = parents[-1]
-                class_bits = self.pool[self.map.get("classes", {}).get(key, 0)]
-                class_bits |= self.range_mask(name, target.lineno, target.end_lineno)
-                bits |= class_bits or self.dependents(name)
+                fields = []
+                for statement in target.body:
+                    if statement.lineno <= line <= statement.end_lineno:
+                        if isinstance(statement, ast.Assign):
+                            fields.extend(
+                                item.id
+                                for item in statement.targets
+                                if isinstance(item, ast.Name)
+                            )
+                        elif isinstance(statement, ast.AnnAssign) and isinstance(
+                            statement.target, ast.Name
+                        ):
+                            fields.append(statement.target.id)
+                field_keys = [key + "." + field for field in fields]
+                attributes = self.map.get("attributes", {})
+                init_reads = self.map.get("attribute_init", ())
+                if field_keys and all(
+                    field in attributes and field not in init_reads
+                    for field in field_keys
+                ):
+                    bits |= union(self.pool[attributes[field]] for field in field_keys)
+                else:
+                    class_bits = self.pool[self.map.get("classes", {}).get(key, 0)]
+                    class_bits |= union(
+                        self.pool[attributes[field]]
+                        for field in field_keys
+                        if field in attributes
+                    )
+                    class_bits |= self.range_mask(
+                        name, target.lineno, target.end_lineno
+                    )
+                    bits |= class_bits or self.dependents(name)
             else:
                 bits |= self.dependents(name)
         if not bits:
@@ -397,12 +524,20 @@ def main():
     parser.add_argument("--data", type=Path, default=Path("/data"))
     parser.add_argument("--source", type=Path, default=Path("/opt/sqlglot"))
     parser.add_argument("--map", type=Path, default=HERE / "maps/coverage.json")
+    parser.add_argument("--no-probe", action="store_true")
     args = parser.parse_args()
     tests = json.loads((args.data / "tests.json").read_text())["tests"]
     selector = Selector(tests, args.map, args.source)
+    from verification import Verifier
+
+    verifier = None if args.no_probe else Verifier(selector)
     total = 0
     for patch in sorted((args.data / "commits").glob("*.patch")):
-        selected = selector.select(patch.read_text(encoding="utf-8"))
+        content = patch.read_text(encoding="utf-8")
+        selected = selector.select(content)
+        if verifier:
+            selected = verifier.check(content, selected)
+            selector.reasons.extend(verifier.log)
         chosen = [tests[i] for i in iter_bits(selected)]
         workers = schedule(chosen)
         total += len(chosen)
