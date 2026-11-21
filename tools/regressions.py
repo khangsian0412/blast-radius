@@ -1,4 +1,4 @@
-"""Container regressions for whole-file import failures and pytest subtests."""
+"""Container regressions for import failures, metadata readers and subtests."""
 
 import argparse
 from pathlib import Path
@@ -37,7 +37,22 @@ request={'source':str(root),'overrides':{'tests/test_serde.py':'import unittest\
 result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)
 subtests=json.loads(result.stdout)
 assert node in subtests['failed'] and node not in subtests['passed'], subtests
-print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True}))
+name='sqlglot/typing/duckdb.py'
+source=(root/name).read_text()
+modified=source.replace('exp.DType.BIGINT','exp.DType.INT',1)
+assert modified != source
+patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
+node='tests/test_typing.py::TestTyping::test_no_redundant_expression_metadata'
+index=next(i for i,t in enumerate(tests) if t['id']==node)
+selected=selector.select(patch)
+assert selected >> index & 1, 'source-inspection test omitted'
+checked=Verifier(selector).check(patch,selected)
+assert checked >> index & 1, 'source-inspection test incorrectly cleared'
+request={'source':str(root),'overrides':{name:modified},'tests':[node],'collect':False,'plans':{},'cpu_budget':5}
+result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)
+metadata=json.loads(result.stdout)
+assert node in metadata['failed'], metadata
+print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_reader_retained':True}))
 """
 
 

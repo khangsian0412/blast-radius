@@ -485,6 +485,31 @@ class PrecisionTests(unittest.TestCase):
             1,
         )
 
+    def test_source_reader_is_independent_of_statement_coverage(self):
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["source_reads"] = {self.name: 2}
+        self.assertEqual(
+            self.selector().select(diff(self.source, self.source.replace(" is ", " != "))),
+            3,
+        )
+
+    def test_source_reader_survives_equivalent_ast(self):
+        self.data["source_reads"] = {self.name: 2}
+        self.assertEqual(
+            self.selector().select(diff(self.source, self.source + "# inspected source\n")),
+            2,
+        )
+
+    def test_source_reader_cannot_be_cleared_by_a_virtual_loader_probe(self):
+        self.data["source_reads"] = {self.name: 2}
+        selector = self.selector()
+        with patch("verification.subprocess.run") as run:
+            selected = Verifier(selector).check(
+                diff(self.source, self.source.replace(" is ", " != ")), 2
+            )
+        self.assertEqual(selected, 2)
+        run.assert_not_called()
+
     def test_initializer_value_dependencies_are_transitive(self):
         self.source = "class Example:\n    FLAG = 1\n"
         (self.root / self.name).write_text(self.source)

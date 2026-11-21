@@ -21,7 +21,7 @@ jobs:
         run: docker build --platform linux/amd64 -f tools/Dockerfile.maps -t blast-maps .
       - name: Collect line, class, attribute and task coverage
         if: inputs.kind == 'all' || inputs.kind == 'coverage'
-        run: docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect.py baseline maps/coverage.json --raw /workspace/coverage.raw
+        run: docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect.py baseline maps/coverage.json --raw /workspace/coverage.raw --reads-output /workspace/source-reads.json
       - name: Collect type, import and subprocess profiles
         if: inputs.kind != 'coverage' && inputs.kind != 'dictionaries' && inputs.kind != 'imports'
         run: |
@@ -44,6 +44,7 @@ jobs:
           path: |
             maps/coverage.json
             coverage.raw
+            source-reads.json
       - uses: actions/upload-artifact@v4
         if: inputs.kind != 'coverage'
         with:

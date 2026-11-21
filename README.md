@@ -10,6 +10,8 @@ The committed plain-JSON map contains measurements from the unmodified baseline:
 
 The selector reconstructs each independent patch in memory. It combines changed-statement coverage with enclosing Boolean expressions, inherited class usage, and initialization dependencies. Lambda bodies are analyzed as executable code rather than configuration reads. New bindings, generator conversions, new definitions and unsupported changes receive conservative coverage.
 
+Source-file reads are recorded separately from execution coverage. A test that reads a module's source can inspect metadata from an already cached import without executing the changed statement. These dependencies are always retained, including for AST-equivalent edits, and cannot be cleared by probes whose virtual loader leaves the original files on disk.
+
 Two additional analyses avoid unnecessary work:
 
 - An abstract interpreter proves certain comparison rewrites equivalent over the baseline's observed operand domains. Custom equality, unknown values and untraced subprocess execution block those proofs.

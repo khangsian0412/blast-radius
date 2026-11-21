@@ -55,6 +55,7 @@ class Verifier:
                 "classes": data.get("class_tasks", {}),
                 "attributes": data.get("attribute_tasks", {}),
                 "fixtures": {},
+                "source_reads": {},
                 "always": 0,
             }
             self.tasks = Selector(jobs, None, self.selector.source, map_data=task_map)
@@ -145,9 +146,16 @@ class Verifier:
                     ):
                         collect = True
             excluded = set(self.selector.map.get("traced_children", ()))
+            # The virtual loader changes executable code, not files read by
+            # Path.read_text/inspect. A baseline file read cannot certify that
+            # its patched counterpart passes; preserve these dependencies.
+            source_readers = union(
+                self.selector.pool[self.selector.map.get("source_reads", {}).get(change.old, 0)]
+                for change in changes
+            )
             excluded.update(
                 self.tests[i]["id"]
-                for i in iter_bits(self.selector.always | self.selector.unknown)
+                for i in iter_bits(self.selector.always | self.selector.unknown | source_readers)
             )
             chosen = [
                 self.tests[i]
@@ -168,6 +176,7 @@ class Verifier:
                         (i, self.tests[i])
                         for i in iter_bits(selected & ~sensitive)
                         if self.tests[i]["id"] in self.groups
+                        and self.tests[i]["id"] not in excluded
                         and self.tests[i]["seconds"] >= 1.0
                     ]
                     if eligible:

@@ -743,6 +743,9 @@ class Selector:
             changes = parse_patch(patch)
             for change in changes:
                 name = change.old or change.new
+                # Reading a source file or inspecting its metadata is a
+                # dependency even if none of its edited statements execute.
+                result |= self.pool[self.map.get("source_reads", {}).get(name, 0)]
                 if change.old != change.new:
                     result |= self.all
                 elif name in self.map["fixtures"]:

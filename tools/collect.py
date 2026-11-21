@@ -17,10 +17,12 @@ def main():
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--raw", type=Path)
+    parser.add_argument("--reads-output", type=Path)
     args = parser.parse_args()
     root = args.source.resolve()
     output = args.output.resolve()
     raw = args.raw.resolve() if args.raw else None
+    reads_output = args.reads_output.resolve() if args.reads_output else None
     os.chdir(root)
     sys.path.insert(0, str(root))
     os.environ["SKIP_INTEGRATION"] = "0"
@@ -29,6 +31,7 @@ def main():
 
     active = [None]
     reads = {}
+    source_reads = {}
     collected = []
     outcomes = {}
     class_reads = {}
@@ -55,6 +58,11 @@ def main():
             name = str(root / name)
         if name.startswith(prefix + "tests/fixtures/"):
             reads.setdefault(name[len(prefix) :], set()).add(active[0])
+        # Source can be inspected without executing its statements, including
+        # modules already cached during collection. Keep this independent of
+        # execution coverage and of AST-equivalence shortcuts in the selector.
+        if name.startswith(prefix) and name.endswith(".py"):
+            source_reads.setdefault(name[len(prefix) :], set()).add(active[0])
 
     sys.addaudithook(audit)
     cov = coverage.Coverage(
@@ -266,6 +274,22 @@ def main():
             ],
         }
     fixture_reads = {name: intern(contexts) for name, contexts in sorted(reads.items())}
+    source_read_masks = {
+        name: intern(contexts) for name, contexts in sorted(source_reads.items())
+    }
+    if reads_output:
+        reads_output.parent.mkdir(parents=True, exist_ok=True)
+        reads_output.write_text(
+            json.dumps(
+                {
+                    "source_reads": {
+                        name: [ids[i] for i in range(len(ids)) if pool[value] >> i & 1]
+                        for name, value in source_read_masks.items()
+                    }
+                },
+                separators=(",", ":"),
+            ) + "\n"
+        )
     uses = {}
     for context, keys in class_reads.items():
         for key in keys:
@@ -292,6 +316,7 @@ def main():
                 "pool": [format(bits, "x") for bits in pool],
                 "files": files,
                 "fixtures": fixture_reads,
+                "source_reads": source_read_masks,
                 "classes": classes,
                 "always": always,
                 "attributes": attributes,

@@ -21,6 +21,11 @@ def main():
 
     for name in sys.argv[2:]:
         extra = json.loads(Path(name).read_text())
+        if "source_reads" in extra:
+            data["source_reads"] = {
+                file: intern(sum(1 << test_index[nodeid] for nodeid in set(names) if nodeid in test_index))
+                for file, names in extra.pop("source_reads").items()
+            }
         if "import_lines" in extra:
             for file, lines in extra.pop("import_lines").items():
                 if file in data["files"]:
