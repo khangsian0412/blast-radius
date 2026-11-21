@@ -52,6 +52,35 @@ for dialect in ('bigquery','duckdb','presto','redshift'):
     result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)
     metadata=json.loads(result.stdout)
     assert node in metadata['failed'], metadata
+name='sqlglot/generators/mysql.py'
+source=(root/name).read_text()
+modified=source.replace('supports_position=True','supports_position=False',1)
+assert modified != source
+patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
+node='tests/dialects/test_dialect.py::TestDialect::test_operators'
+index=next(i for i,t in enumerate(tests) if t['id']==node)
+assert selector.select_conservative(patch) >> index & 1, 'callback failure omitted'
+request={'source':str(root),'overrides':{name:modified},'tests':[node],'collect':False,'plans':{},'cpu_budget':5}
+result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)
+callback=json.loads(result.stdout)
+assert node in callback['failed'], callback
+assert selector.map.get('import_calls_complete')
+name='sqlglot/parser.py'
+source=(root/name).read_text()
+tree=ast.parse(source)
+called=set(selector.map['import_calls'][name])
+candidate=next(n for n in ast.walk(tree) if isinstance(n,ast.Lambda) and n.lineno in called and any(isinstance(v,ast.Constant) and type(v.value) is int for v in ast.walk(n.body)))
+value=next(v for v in ast.walk(candidate.body) if isinstance(v,ast.Constant) and type(v.value) is int)
+lines=source.splitlines(True)
+start=sum(map(len,lines[:value.lineno-1]))+value.col_offset
+end=sum(map(len,lines[:value.end_lineno-1]))+value.end_col_offset
+modified=source[:start]+str(value.value+1)+source[end:]
+patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
+assert selector.select_conservative(patch)==selector.all, 'actual import-time callback was narrowed'
+fixture='tests/fixtures/optimizer/tpc-h/tpc-h.sql'
+fixture_bits=selector.pool[selector.map['fixtures'][fixture]]
+executor=[i for i,t in enumerate(tests) if t['id'].startswith('tests/test_executor.py::TestExecutor::')]
+assert executor and all(fixture_bits >> i & 1 for i in executor), 'shared fixture lost class setup dependencies'
 name='sqlglot/optimizer/scope.py'
 source=(root/name).read_text()
 modified='# an apparently harmless comment\n'+source
@@ -65,7 +94,7 @@ with tempfile.TemporaryDirectory() as temporary:
     output=json.loads(result.stdout)
     numbers=[number for worker in output['workers'] for number in worker]
     assert len(numbers)==len(tests) and set(numbers)=={t['number'] for t in tests}
-print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'default_comment_selection_covers_every_test':True}))
+print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'default_comment_selection_covers_every_test':True,'callback_failure_retained':True,'import_time_callback_stays_broad':True,'shared_fixture_class_tests':len(executor)}))
 """
 
 

@@ -153,6 +153,8 @@ def main():
     for module in sorted(module_files):
         if not module.endswith(".__main__"):
             importlib.import_module(module)
+    if sys.getprofile() is not profile:
+        raise SystemExit("Baseline call profiler was replaced; refusing incomplete call data")
     sys.setprofile(None)
     cov.stop()
     data = cov.get_data()

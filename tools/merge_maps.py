@@ -21,6 +21,27 @@ def main():
 
     for name in sys.argv[2:]:
         extra = json.loads(Path(name).read_text())
+        def readers(names):
+            return sum(1 << test_index[nodeid] for nodeid in set(names) if nodeid in test_index)
+
+        if "shared_lines" in extra:
+            for file, lines in extra.pop("shared_lines").items():
+                record = data["files"].setdefault(file, {"lines": {}})
+                for line, names in lines.items():
+                    bits = readers(names)
+                    for table in (record["lines"], record.setdefault("outside", {})):
+                        table[line] = intern(pool[table.get(line, 0)] | bits)
+        for source_key, targets in (
+            ("shared_fixtures", ("fixtures",)),
+            ("shared_source_reads", ("source_reads",)),
+            ("shared_classes", ("classes", "classes_outside")),
+            ("shared_attributes", ("attributes", "attributes_outside")),
+        ):
+            for key, names in extra.pop(source_key, {}).items():
+                bits = readers(names)
+                for target_key in targets:
+                    table = data.setdefault(target_key, {})
+                    table[key] = intern(pool[table.get(key, 0)] | bits)
         if "source_reads" in extra:
             data["source_reads"] = {
                 file: intern(sum(1 << test_index[nodeid] for nodeid in set(names) if nodeid in test_index))

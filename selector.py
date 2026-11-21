@@ -754,6 +754,8 @@ class Selector:
         Import-read fields, unobserved fields, special attributes, expressions,
         dictionaries, changed annotations and new/deleted bindings stay broad.
         """
+        if not self.map.get("shared_collection") or not self.map.get("attribute_dependencies_complete") or "attribute_init" not in self.map:
+            return None
         parents = sorted(
             (node for node in ast.walk(before) if isinstance(node, ast.ClassDef)
              and node.lineno <= line <= node.end_lineno),
@@ -817,6 +819,8 @@ class Selector:
             for change in parse_patch(patch):
                 name = change.old
                 if name == change.new and name in self.map["fixtures"]:
+                    if not self.map.get("shared_collection"):
+                        return self.all
                     fixture_readers = self.pool[self.map["fixtures"][name]]
                     if not fixture_readers:
                         return self.all
@@ -886,7 +890,10 @@ class Selector:
                         for node in functions for decorator in getattr(node, "decorator_list", ())
                     ):
                         return self.all
-                    function_users = self.range_mask(name, owner.lineno, owner.end_lineno)
+                    function_users = (
+                        self.range_mask(name, owner.lineno, owner.end_lineno)
+                        if self.map.get("shared_collection") else self.dependents(name)
+                    )
                     if not function_users:
                         return self.all
                     affected |= function_users

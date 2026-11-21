@@ -8,11 +8,15 @@ The repository-root Dockerfile is the submission entry point. It runs without a 
 
 The committed plain-JSON map contains measurements from the unmodified baseline: per-test and per-task coverage, class and attribute usage, subprocess coverage, initializer dependencies, operand types and bounded primitive values. It contains no patch IDs, mutation outcomes, or failing-test labels.
 
-The default selection policy prioritizes avoiding omissions. It reconstructs each independent patch and keeps whole-module coverage plus reverse import dependencies for ordinary function-body replacements. All baseline source-reading tests are retained as well, because inspecting a function or cached metadata need not execute its edited body.
+The default selection policy prioritizes avoiding omissions. It reconstructs each independent patch and keeps the entire changed function's baseline coverage for ordinary body replacements. All baseline source-reading tests are retained as well, because inspecting a function or cached metadata need not execute its edited body. It does not narrow to only the edited statement.
 
 Source-file reads are recorded separately from execution coverage. A test that reads a module's source can inspect metadata from an already cached import without executing the changed statement. These dependencies are always retained, including for AST-equivalent edits, and cannot be cleared by probes whose virtual loader leaves the original files on disk.
 
-The full provided test inventory is selected for source-only/AST-equivalent edits, fixtures and other resources, definitions, class configuration, import-time changes, new bindings, inserted code, incomplete patch parsing and missing coverage. This follows the organizers' explicit warning that a comment-only change is not promised to be harmless. Every git file section must be accounted for; duplicate file sections and unsupported file-mode/copy changes are treated as uncertainty.
+Known fixtures retain every recorded reader, including all members of a class whose setup loads that fixture. Unknown or empty fixture mappings keep the full inventory. A scalar class setting can use all class/attribute users only when both old and new values are literals of the same type, the attribute was observed at runtime, and initialization measurements show no import-time read. Unmapped settings, dictionaries, expressions, changed annotations and special attributes stay broad.
+
+Lambda definitions and calls can share a source line. Separate callable-entry measurements from baseline collection/imports distinguish them; callbacks actually invoked during initialization, and callbacks without complete call measurements, keep the full inventory.
+
+The full provided test inventory is selected for source-only/AST-equivalent edits, unknown resources, definitions, import-sensitive configuration, import-time execution, new bindings, inserted code, incomplete patch parsing and missing coverage. This preserves the organizers' warning that a comment-only change is not promised to be harmless. Every git file section must be accounted for; duplicate file sections and unsupported file-mode/copy changes are treated as uncertainty.
 
 The default does **not** remove tests based on observed operand values, supposedly unread dictionary values, or passing runtime probes. These analyses from the earlier submission remain available only through `--selection precise` for research and comparison; they are disabled in the submission's default mode.
 
@@ -32,7 +36,9 @@ python3 tools/benchmark.py
 
 Docker and Python are required. `make sample` builds `linux/amd64` and uses the scorer's no-network, read-only, nobody-user, 2-CPU, 4-GB, 256-process and 64-MB-temporary-storage restrictions.
 
-The verification workflow requires valid output with zero sample misses, checks whole-file import failures and failed subtests, and measures three runs. CPU-bounded verification may retain different unresolved tests under different timing conditions; every run must remain valid. The official score uses the median total.
+The verification workflow requires valid output with zero sample misses, checks whole-file import failures, failed subtests, metadata and callback regressions, shared fixture readers and comment-only coverage, and measures three runs. The official score uses the median total.
+
+The confirmed zero-miss submission is preserved on `checkpoint/zero-miss-e2f23d8`. The first optimization checkpoint restores known-fixture readers, whole-function coverage and measured runtime-only scalar settings. It keeps comment-only and import-time fallbacks and leaves passing-test probes disabled. Local independent audits also ran 5,801 omitted tests against actual patched source/data with no failures; hidden correctness must be confirmed by another scored run before further narrowing.
 
 The sample kit has 30 patches. The starter's simulated cost on this same set is **1,210.470 seconds**. Latest measured results are available in the workflow's `sample-output` artifact. These are sample measurements, not a guarantee about hidden practice or final scores.
 

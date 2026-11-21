@@ -29,6 +29,7 @@ class ConservativeTests(unittest.TestCase):
             "files": {self.name: {"lines": {"2": 1, "5": 2}}},
             "source_reads": {self.name: 3},
             "fixtures": {"tests/fixtures/x.sql": 1},
+            "shared_collection": {"tests": 4},
         }
 
     def select(self, changed):
@@ -38,6 +39,10 @@ class ConservativeTests(unittest.TestCase):
 
     def test_body_edit_keeps_function_callers_and_inspectors(self):
         self.assertEqual(self.select(self.source.replace("return 1", "return 3")), 5)
+
+    def test_old_map_keeps_module_dependencies_without_shared_scope_measurements(self):
+        del self.data["shared_collection"]
+        self.assertEqual(self.select(self.source.replace("return 1", "return 3")), 7)
 
     def test_entire_function_coverage_is_kept_across_different_branches(self):
         self.source = "def f(x):\n    if x:\n        return 1\n    return 2\n"
@@ -67,6 +72,8 @@ class ConservativeTests(unittest.TestCase):
         self.source = "class Example:\n    VALUE = 1\n"
         self.data["attributes"] = {"sqlglot.example.Example.VALUE": 1}
         self.data["classes"] = {"sqlglot.example.Example": 2}
+        self.data["attribute_dependencies_complete"] = True
+        self.data["attribute_init"] = []
         self.data["files"][self.name]["lines"] = {"2": 1}
 
     def test_runtime_scalar_retains_all_class_and_attribute_users(self):
@@ -86,6 +93,11 @@ class ConservativeTests(unittest.TestCase):
     def test_missing_class_usage_prevents_runtime_setting_reduction(self):
         self.runtime_setting()
         self.data["classes"] = {}
+        self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
+
+    def test_missing_import_measurements_prevent_runtime_setting_reduction(self):
+        self.runtime_setting()
+        del self.data["attribute_init"]
         self.assertEqual(self.select(self.source.replace("VALUE = 1", "VALUE = 2")), 15)
 
     def test_comment_can_change_observable_code_metadata(self):
