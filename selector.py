@@ -764,6 +764,12 @@ class Selector:
         try:
             for change in parse_patch(patch):
                 name = change.old
+                if name == change.new and name in self.map["fixtures"]:
+                    fixture_readers = self.pool[self.map["fixtures"][name]]
+                    if not fixture_readers:
+                        return self.all
+                    result |= fixture_readers
+                    continue
                 if (
                     name != change.new
                     or name is None

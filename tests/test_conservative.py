@@ -68,9 +68,15 @@ class ConservativeTests(unittest.TestCase):
         self.data["source_reads"] = {}
         self.assertEqual(self.select(self.source.replace("return 1", "return 3")), 15)
 
-    def test_fixture_read_map_cannot_certify_new_fixture_behavior(self):
+    def test_known_fixture_keeps_all_readers_and_source_inspectors(self):
         selector = Selector(self.tests, None, self.root, map_data=self.data)
-        self.assertEqual(selector.select_conservative(diff("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/x.sql")), 15)
+        self.assertEqual(selector.select_conservative(diff("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/x.sql")), 5)
+
+    def test_unmapped_or_empty_fixture_coverage_keeps_every_test(self):
+        for mapping in ({}, {"tests/fixtures/x.sql": 0}):
+            self.data["fixtures"] = mapping
+            selector = Selector(self.tests, None, self.root, map_data=self.data)
+            self.assertEqual(selector.select_conservative(diff("SELECT 1;\n", "SELECT 2;\n", "tests/fixtures/x.sql")), 15)
 
     def test_duplicate_file_sections_are_not_overwritten_by_a_probe(self):
         patch = diff(self.source, self.source.replace("return 1", "return 3"))
