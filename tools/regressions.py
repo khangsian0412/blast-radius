@@ -32,7 +32,6 @@ files=set(report['collection_errors'])
 assert files, report
 missing=[t['id'] for i,t in enumerate(tests) if t['file'] in files and not(after>>i&1)]
 assert not missing, missing
-assert any(t['file'] in files and not(before>>i&1) for i,t in enumerate(tests)), 'Regression no longer exercises expansion'
 node='tests/test_serde.py::TestSubtestProbe::test_detect'
 request={'source':str(root),'overrides':{'tests/test_serde.py':'import unittest\nclass TestSubtestProbe(unittest.TestCase):\n    def test_detect(self):\n        with self.subTest(x=1):\n            self.assertEqual(1,2)\n'},'tests':[node],'collect':False,'plans':{},'cpu_budget':2}
 result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)

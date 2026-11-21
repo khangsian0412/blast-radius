@@ -461,6 +461,54 @@ class PrecisionTests(unittest.TestCase):
             1,
         )
 
+    def test_initializer_dependencies_do_not_mix_unrelated_attributes(self):
+        self.source = "class Example:\n    FLAG = 1\n"
+        (self.root / self.name).write_text(self.source)
+        (self.root / "sqlglot/registry.py").write_text("VALUE = 1\n")
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["files"]["sqlglot/registry.py"] = {"lines": {"1": 2}}
+        self.data["classes"] = {"sqlglot.example.Example": 1}
+        self.data["attributes"] = {"sqlglot.example.Example.FLAG": 1}
+        self.data["attribute_init"] = ["sqlglot.example.Example.FLAG"]
+        self.data["class_dependencies_complete"] = True
+        self.data["attribute_dependencies_complete"] = True
+        self.data["attribute_value_dependencies"] = {
+            "sqlglot.example.Example.FLAG": ["sqlglot.example.Example.derived"]
+        }
+        self.data["attribute_module_dependencies"] = {
+            "sqlglot.example.Example.unrelated": ["sqlglot/registry.py"]
+        }
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("FLAG = 1", "FLAG = 2"))
+            ),
+            1,
+        )
+
+    def test_initializer_value_dependencies_are_transitive(self):
+        self.source = "class Example:\n    FLAG = 1\n"
+        (self.root / self.name).write_text(self.source)
+        (self.root / "sqlglot/registry.py").write_text("VALUE = 1\n")
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["files"]["sqlglot/registry.py"] = {"lines": {"1": 2}}
+        self.data["classes"] = {"sqlglot.example.Example": 1}
+        self.data["attributes"] = {"sqlglot.example.Example.FLAG": 1}
+        self.data["attribute_init"] = ["sqlglot.example.Example.FLAG"]
+        self.data["class_dependencies_complete"] = True
+        self.data["attribute_dependencies_complete"] = True
+        self.data["attribute_value_dependencies"] = {
+            "sqlglot.example.Example.FLAG": ["sqlglot.consumer.Consumer.cached"]
+        }
+        self.data["attribute_module_dependencies"] = {
+            "sqlglot.consumer.Consumer.cached": ["sqlglot/registry.py"]
+        }
+        self.assertEqual(
+            self.selector().select(
+                diff(self.source, self.source.replace("FLAG = 1", "FLAG = 2"))
+            ),
+            3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

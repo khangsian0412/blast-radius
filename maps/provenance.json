@@ -1,14 +1,30 @@
 {
   "baseline_commit": "eb11aec4be8cb2122afe713a4816662c3f0fb2fa",
   "baseline_archive_sha256": "93b2445f15f395b81c20556777ece19a6c7507df950f13fa9fac4a3be739af0d",
-  "coverage_sha256": "eb8b6971a9460a46a7ec636c2668c509e748e3236d3571fb1575c63068cc999d",
-  "collector_repository_commit": "271340b6e1c373c5923bc10ae7c10710a7900374",
-  "collection_workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44876293609",
+  "coverage_sha256": "ef5ea496fa948ad1893bd80becaae6b673b966c2e80c06a807328bc54e918ee0",
   "container_image": "python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90",
-  "platform": "linux/amd64",
-  "coverage_version": "7.13.5",
-  "baseline_tests_passed": 1620,
-  "baseline_tests_skipped": 1,
-  "baseline_subtests_passed": 25440,
-  "purpose": "Only unmodified baseline coverage and dependencies; no patch outcomes."
+  "measurements": [
+    {
+      "kind": "line/class/attribute/task coverage",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44881995339"
+    },
+    {
+      "kind": "operand domains and subprocess coverage",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44881997642"
+    },
+    {
+      "kind": "literal dictionary observations",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44881999863"
+    },
+    {
+      "kind": "expanded initialization graph",
+      "environment": "darwin, Python 3.13.15",
+      "generator_sha256": "27a8353a2c701a7f967d6980264f5eadab0f7bf9d75c580ba5f803e0553e7a30",
+      "baseline_only": true
+    }
+  ],
+  "runtime_answers": "No patch IDs, patch hashes, mutant outcomes, or failing-test labels are used by the selector."
 }

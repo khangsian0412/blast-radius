@@ -286,7 +286,45 @@ class Selector:
                 bits |= 1 << i
         return bits
 
-    def class_dependency_mask(self, key):
+    def class_dependency_mask(self, key, fields=()):
+        if self.map.get("attribute_dependencies_complete"):
+            classes = {key}
+            points = set(fields)
+            pending = list(points)
+            modules = set()
+            all_points = (
+                set(self.map.get("attribute_value_dependencies", {}))
+                | set(self.map.get("attribute_class_dependencies", {}))
+                | set(self.map.get("attribute_module_dependencies", {}))
+            )
+            while pending:
+                point = pending.pop()
+                for target in self.map.get("attribute_value_dependencies", {}).get(
+                    point, ()
+                ):
+                    classes.add(target.rsplit(".", 1)[0])
+                    if target not in points:
+                        points.add(target)
+                        pending.append(target)
+                for target in self.map.get("attribute_class_dependencies", {}).get(
+                    point, ()
+                ):
+                    classes.add(target)
+                    for candidate in all_points:
+                        if (
+                            candidate.rsplit(".", 1)[0] == target
+                            and candidate not in points
+                        ):
+                            points.add(candidate)
+                            pending.append(candidate)
+                modules.update(
+                    self.map.get("attribute_module_dependencies", {}).get(point, ())
+                )
+            result = union(
+                self.pool[self.map.get("classes", {}).get(name, 0)] for name in classes
+            )
+            return result | union(self.dependents(module) for module in modules)
+
         visited = {key}
         pending = [key]
         while pending:
@@ -545,7 +583,10 @@ class Selector:
             if (
                 (line in initial)
                 if isinstance(owner, ast.Lambda)
-                else any(owner.lineno <= point <= owner.end_lineno for point in initial)
+                else any(
+                    owner.body[0].lineno <= point <= owner.end_lineno
+                    for point in initial
+                )
             ):
                 bits |= self.dependents(name)
             direct = executable.get(line, 0)
@@ -567,7 +608,13 @@ class Selector:
             if not direct:
                 direct = self.range_mask(name, owner.lineno, owner.end_lineno)
                 if not direct and any(
-                    owner.lineno <= entry <= owner.end_lineno
+                    (
+                        owner.body.lineno
+                        if isinstance(owner, ast.Lambda)
+                        else owner.body[0].lineno
+                    )
+                    <= entry
+                    <= owner.end_lineno
                     for entry in self.map["files"].get(name, {}).get("init", ())
                 ):
                     return self.all
@@ -675,7 +722,7 @@ class Selector:
                     )
                     if any(field in init_reads for field in field_keys):
                         class_bits |= (
-                            self.class_dependency_mask(key)
+                            self.class_dependency_mask(key, field_keys)
                             if self.map.get("class_dependencies_complete")
                             else self.dependents(name)
                         )

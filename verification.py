@@ -85,7 +85,7 @@ class Verifier:
                 if owners:
                     owner = min(owners, key=lambda node: node.end_lineno - node.lineno)
                     if any(
-                        owner.lineno <= entry <= owner.end_lineno
+                        owner.body[0].lineno <= entry <= owner.end_lineno
                         for entry in data["files"].get(name, {}).get("init", ())
                     ):
                         return self.selector.all
@@ -138,7 +138,8 @@ class Verifier:
                     ]
                     if not owners or any(
                         any(
-                            node.lineno <= entry <= node.end_lineno for entry in initial
+                            node.body[0].lineno <= entry <= node.end_lineno
+                            for entry in initial
                         )
                         for node in owners
                     ):
@@ -200,7 +201,10 @@ class Verifier:
                 "collect": collect,
                 "tests": targets,
                 "plans": plans,
-                "cpu_budget": min(float(os.environ.get("BLAST_TEST_CPU_SECONDS", "1.25")), max(0.25, self.cpu_budget - self.cpu_used)),
+                "cpu_budget": min(
+                    float(os.environ.get("BLAST_TEST_CPU_SECONDS", "1.25")),
+                    max(0.25, self.cpu_budget - self.cpu_used),
+                ),
             }
             start = resource.getrusage(resource.RUSAGE_CHILDREN)
             with tempfile.TemporaryDirectory(prefix="blast-") as temporary:
@@ -231,7 +235,9 @@ class Verifier:
                 # Import failures can leave registries and partially initialized
                 # modules inconsistent beyond the files pytest reports directly.
                 selected = self.selector.all
-                self.log.append(f"import errors in {len(failed_files)} test files; all tests retained")
+                self.log.append(
+                    f"import errors in {len(failed_files)} test files; all tests retained"
+                )
             passed = set(report.get("passed", ())) & set(targets)
             for i in list(iter_bits(selected)):
                 if self.tests[i]["id"] in passed:

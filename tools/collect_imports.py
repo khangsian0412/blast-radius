@@ -1,5 +1,6 @@
 """Record baseline initializer execution and dynamic import-time dependencies."""
 
+import ast
 import coverage
 import importlib
 import json
@@ -19,12 +20,23 @@ def main():
     dependencies = {}
     class_dependencies = {}
     class_modules = {}
+    attribute_values = {}
+    attribute_classes = {}
+    attribute_modules = {}
+    assignments = {}
     module_files = {}
     for path in (root / "sqlglot").rglob("*.py"):
         parts = list(path.relative_to(root).with_suffix("").parts)
         if parts[-1] == "__init__":
             parts.pop()
         module_files[".".join(parts)] = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text())
+        by_line = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                for line in range(node.value.lineno, node.value.end_lineno + 1):
+                    by_line.setdefault(line, []).append(node)
+        assignments[str(path)] = by_line
 
     def attribute(obj, name):
         key = attribute_owner(obj, name)
@@ -58,12 +70,51 @@ def main():
                         target_class = consumer_module + "." + values["__qualname__"]
                         break
                     frame = frame.f_back
-                if target_class:
-                    if target_class != parent_class:
-                        class_dependencies.setdefault(parent_class, set()).add(
-                            target_class
+                stable_targets = set()
+                frame = sys._getframe(1)
+                while frame is not None:
+                    values = frame.f_locals
+                    for assignment in assignments.get(frame.f_code.co_filename, {}).get(
+                        frame.f_lineno, ()
+                    ):
+                        targets = (
+                            assignment.targets
+                            if isinstance(assignment, ast.Assign)
+                            else [assignment.target]
                         )
+                        for target in targets:
+                            if isinstance(target, ast.Attribute) and isinstance(
+                                target.value, ast.Name
+                            ):
+                                obj = values.get(target.value.id)
+                                if isinstance(obj, type) and obj.__module__.startswith(
+                                    "sqlglot"
+                                ):
+                                    stable_targets.add(
+                                        f"{obj.__module__}.{obj.__qualname__}.{target.attr}"
+                                    )
+                            elif (
+                                isinstance(target, ast.Name)
+                                and values.get("__module__") == consumer_module
+                                and isinstance(values.get("__qualname__"), str)
+                            ):
+                                stable_targets.add(
+                                    consumer_module
+                                    + "."
+                                    + values["__qualname__"]
+                                    + "."
+                                    + target.id
+                                )
+                    if stable_targets:
+                        break
+                    frame = frame.f_back
+                if stable_targets:
+                    attribute_values.setdefault(key, set()).update(stable_targets)
+                elif target_class and target_class != parent_class:
+                    attribute_classes.setdefault(key, set()).add(target_class)
+                    class_dependencies.setdefault(parent_class, set()).add(target_class)
                 elif consumer:
+                    attribute_modules.setdefault(key, set()).add(consumer)
                     class_modules.setdefault(parent_class, set()).add(consumer)
                 origins = [
                     module for module in module_files if key.startswith(module + ".")
@@ -112,6 +163,16 @@ def main():
             {
                 "import_lines": files,
                 "class_dependencies_complete": True,
+                "attribute_dependencies_complete": True,
+                "attribute_value_dependencies": {
+                    key: sorted(value) for key, value in attribute_values.items()
+                },
+                "attribute_class_dependencies": {
+                    key: sorted(value) for key, value in attribute_classes.items()
+                },
+                "attribute_module_dependencies": {
+                    key: sorted(value) for key, value in attribute_modules.items()
+                },
                 "class_dependencies": {
                     key: sorted(value) for key, value in class_dependencies.items()
                 },
