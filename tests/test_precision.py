@@ -500,19 +500,6 @@ class PrecisionTests(unittest.TestCase):
             2,
         )
 
-    def test_source_reader_follows_import_dependencies(self):
-        self.source = "VALUE = 1\n"
-        (self.root / self.name).write_text(self.source)
-        consumer = "sqlglot/consumer.py"
-        (self.root / consumer).write_text("from sqlglot.example import VALUE\n")
-        self.data["files"][self.name] = {"lines": {"1": 1}}
-        self.data["files"][consumer] = {"lines": {}}
-        self.data["source_reads"] = {consumer: 2}
-        self.assertEqual(
-            self.selector().select(diff(self.source, "VALUE = 2\n")),
-            3,
-        )
-
     def test_source_reader_cannot_be_cleared_by_a_virtual_loader_probe(self):
         self.data["source_reads"] = {self.name: 2}
         selector = self.selector()

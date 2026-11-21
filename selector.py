@@ -208,9 +208,7 @@ class Selector:
 
     def file_mask(self, name: str) -> int:
         if name not in self.file_masks:
-            self.file_masks[name] = union(self.lines(name).values()) | self.pool[
-                self.map.get("source_reads", {}).get(name, 0)
-            ]
+            self.file_masks[name] = union(self.lines(name).values())
         return self.file_masks[name]
 
     def read(self, name: str) -> str:
