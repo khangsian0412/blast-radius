@@ -8,20 +8,17 @@ The repository-root Dockerfile is the submission entry point. It runs without a 
 
 The committed plain-JSON map contains measurements from the unmodified baseline: per-test and per-task coverage, class and attribute usage, subprocess coverage, initializer dependencies, operand types and bounded primitive values. It contains no patch IDs, mutation outcomes, or failing-test labels.
 
-The selector reconstructs each independent patch in memory. It combines changed-statement coverage with enclosing Boolean expressions, inherited class usage, and initialization dependencies. Lambda bodies are analyzed as executable code rather than configuration reads. New bindings, generator conversions, new definitions and unsupported changes receive conservative coverage.
+The default selection policy prioritizes avoiding omissions. It reconstructs each independent patch and keeps whole-module coverage plus reverse import dependencies for ordinary function-body replacements. All baseline source-reading tests are retained as well, because inspecting a function or cached metadata need not execute its edited body.
 
 Source-file reads are recorded separately from execution coverage. A test that reads a module's source can inspect metadata from an already cached import without executing the changed statement. These dependencies are always retained, including for AST-equivalent edits, and cannot be cleared by probes whose virtual loader leaves the original files on disk.
 
-Two additional analyses avoid unnecessary work:
+The full provided test inventory is selected for source-only/AST-equivalent edits, fixtures and other resources, definitions, class configuration, import-time changes, new bindings, inserted code, incomplete patch parsing and missing coverage. This follows the organizers' explicit warning that a comment-only change is not promised to be harmless. Every git file section must be accounted for; duplicate file sections and unsupported file-mode/copy changes are treated as uncertainty.
 
-- An abstract interpreter proves certain comparison rewrites equivalent over the baseline's observed operand domains. Custom equality, unknown values and untraced subprocess execution block those proofs.
-- Changes to existing, immutable literal dictionary values can be ignored when the affected entries were never read. Changed keys, observed value reads, mutation and external escapes prevent this optimization.
+The default does **not** remove tests based on observed operand values, supposedly unread dictionary values, or passing runtime probes. These analyses from the earlier submission remain available only through `--selection precise` for research and comparison; they are disabled in the submission's default mode.
 
-Import-sensitive changes are checked in an isolated process. **Any import failure retains the complete test inventory**, including tests that would fail before their bodies run. This addresses the coverage gap where a class change breaks module imports but ordinary coverage selects only callers of that class.
+`--selection complete` is an independent diagnostic control. It schedules every number in the supplied test inventory for every patch, without reading patch contents or requiring a baseline checkout. Under the published scoring rules this cannot omit a listed failing test, but its simulated cost is substantially higher. It is intended to distinguish selector omissions from a submission or scoring problem.
 
-Small selected tests can be verified directly. Expensive optimizer tasks can be filtered only when complete task coverage is available and the change has no initializer or parent-process dependency. Unknown tasks execute normally. Failed subtests count as failures even when pytest later reports the root call as passed. Opaque subprocess tests are retained rather than checked against an unpatched child.
-
-Checks have CPU and wall-time budgets. A timeout or incomplete check retains unresolved tests. The scheduler then tries one through eight workers and minimizes the scoring formula in integer milliseconds.
+The scheduler tries one through eight workers and minimizes the scoring formula in integer milliseconds. Unknown inventory entries are retained. The full-inventory fallbacks and broader dependencies deliberately trade simulated speed for recall; a zero-miss result on the hidden set still requires a new practice run.
 
 ## Verification
 

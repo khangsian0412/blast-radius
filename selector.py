@@ -49,9 +49,13 @@ def parse_patch(text: str) -> list[FileChange]:
     lines = text.splitlines(keepends=True)
     changes = []
     current = None
+    git_sections = 0
     i = 0
     while i < len(lines):
         line = lines[i]
+        if line.startswith("diff --git "):
+            git_sections += 1
+            current = None
         if (
             line.startswith("--- ")
             and i + 1 < len(lines)
@@ -94,12 +98,20 @@ def parse_patch(text: str) -> list[FileChange]:
             current.hunks.append((old_start, old_count, new_start, new_count, body))
             continue
         if line.startswith(
-            ("GIT binary patch", "Binary files ", "rename from ", "rename to ")
+            (
+                "GIT binary patch", "Binary files ", "rename from ", "rename to ",
+                "copy from ", "copy to ", "old mode ", "new mode ",
+            )
         ):
             raise ValueError("non-text change requires conservative selection")
         i += 1
     if not changes:
         raise ValueError("no analyzable file changes")
+    if git_sections and git_sections != len(changes):
+        raise ValueError("not every git file section was analyzed")
+    names = [change.old or change.new for change in changes]
+    if len(names) != len(set(names)):
+        raise ValueError("repeated file sections require conservative selection")
     return changes
 
 
@@ -736,6 +748,82 @@ class Selector:
             bits = self.dependents(name) or self.all
         return bits
 
+    def select_conservative(self, patch: str) -> int:
+        """Accuracy-first selection; observed baseline values are not proofs.
+
+        Keep whole-module dependents for ordinary function-body replacements.
+        Source text, import-time state, fixtures and unmodeled changes can affect
+        tests without executing an edited line, so they use the full inventory.
+        No patched-test probe is allowed to remove this selection.
+        """
+        self.reasons = []
+        readers = union(
+            self.pool[index] for index in self.map.get("source_reads", {}).values()
+        )
+        result = self.unknown | self.always | readers
+        try:
+            for change in parse_patch(patch):
+                name = change.old
+                if (
+                    name != change.new
+                    or name is None
+                    or not name.endswith(".py")
+                    or name not in self.map["files"]
+                ):
+                    self.reasons.append("resource or unsupported change: full inventory")
+                    return self.all
+                old = self.read(name)
+                new, removed, inserted = apply_change(old, change)
+                before = self.tree(name)
+                after = ast.parse(new.encode("utf-8"), type_comments=True)
+                if ast.dump(before, include_attributes=False) == ast.dump(
+                    after, include_attributes=False
+                ):
+                    self.reasons.append("source-only change is not proof of safety: full inventory")
+                    return self.all
+                if self.binding_signatures(before, name) != self.binding_signatures(after, name):
+                    return self.all
+                if inserted or not removed:
+                    return self.all
+                functions = [
+                    node for node in ast.walk(before)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ]
+                classes = [node for node in ast.walk(before) if isinstance(node, ast.ClassDef)]
+                initial = self.map["files"][name].get("init", ())
+                for line in removed:
+                    owners = [node for node in functions if node.lineno <= line <= node.end_lineno]
+                    if not owners:
+                        return self.all
+                    owner = min(owners, key=lambda node: node.end_lineno - node.lineno)
+                    if line < owner.body[0].lineno or any(
+                        owner.body[0].lineno <= point <= owner.end_lineno for point in initial
+                    ):
+                        return self.all
+                    first = owner.body[0]
+                    if (
+                        isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)
+                        and first.lineno <= line <= first.end_lineno
+                    ):
+                        return self.all
+                    if any(owner.lineno < node.lineno <= line <= node.end_lineno for node in classes):
+                        return self.all
+                    if any(
+                        decorator.lineno <= line <= node.lineno
+                        for node in functions for decorator in node.decorator_list
+                    ):
+                        return self.all
+                affected = self.dependents(name)
+                if not affected:
+                    return self.all
+                result |= affected
+        except (OSError, UnicodeError, ValueError, SyntaxError, IndexError, RecursionError, TypeError):
+            self.reasons.append("uncertain analysis: full inventory")
+            return self.all
+        return result or self.all
+
     def select(self, patch: str) -> int:
         self.reasons = []
         result = self.unknown
@@ -798,16 +886,33 @@ def main():
     parser.add_argument("--source", type=Path, default=Path("/opt/sqlglot"))
     parser.add_argument("--map", type=Path, default=HERE / "maps/coverage.json")
     parser.add_argument("--no-probe", action="store_true")
+    parser.add_argument(
+        "--selection", choices=("conservative", "precise", "complete"),
+        default="conservative",
+        help="conservative is accuracy-first; complete selects every provided test",
+    )
     args = parser.parse_args()
     tests = json.loads((args.data / "tests.json").read_text())["tests"]
+    if args.selection == "complete":
+        workers = schedule(tests)
+        for patch in sorted((args.data / "commits").glob("*.patch")):
+            print(json.dumps({"commit": patch.stem, "workers": workers}, separators=(",", ":")), flush=True)
+        return
     selector = Selector(tests, args.map, args.source)
     from verification import Verifier
 
-    verifier = None if args.no_probe else Verifier(selector)
+    verifier = Verifier(selector) if args.selection == "precise" and not args.no_probe else None
     total = 0
     for patch in sorted((args.data / "commits").glob("*.patch")):
-        content = patch.read_text(encoding="utf-8")
-        selected = selector.select(content)
+        try:
+            content = patch.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            print(json.dumps({"commit": patch.stem, "workers": schedule(tests)}, separators=(",", ":")), flush=True)
+            continue
+        selected = (
+            selector.select_conservative(content)
+            if args.selection == "conservative" else selector.select(content)
+        )
         if verifier:
             selected = verifier.check(content, selected)
             selector.reasons.extend(verifier.log)

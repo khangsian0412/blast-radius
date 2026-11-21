@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 
 SCRIPT = r"""
-import ast, difflib, json, pathlib, subprocess, sys
+import ast, difflib, json, pathlib, subprocess, sys, tempfile
 sys.path.insert(0, '/app')
 from selector import Selector
 from verification import Verifier
@@ -23,7 +23,8 @@ start=sum(map(len,lines[:value.lineno-1]))+value.col_offset
 end=sum(map(len,lines[:value.end_lineno-1]))+value.end_col_offset
 modified=source[:start]+'True'+source[end:]
 patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
-before=selector.select(patch)
+before=selector.select_conservative(patch)
+assert before == selector.all, 'import-sensitive edits must keep the complete inventory'
 verifier=Verifier(selector)
 after=verifier.check(patch,before)
 report=verifier.last_report
@@ -45,15 +46,26 @@ for dialect in ('bigquery','duckdb','presto','redshift'):
     modified=source.replace('exp.DType.BIGINT','exp.DType.INT')
     assert modified != source
     patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
-    selected=selector.select(patch)
+    selected=selector.select_conservative(patch)
     assert selected >> index & 1, f'{name}: source-inspection test omitted'
-    checked=Verifier(selector).check(patch,selected)
-    assert checked >> index & 1, f'{name}: source-inspection test incorrectly cleared'
     request={'source':str(root),'overrides':{name:modified},'tests':[node],'collect':False,'plans':{},'cpu_budget':5}
     result=subprocess.run([sys.executable,'/app/probe.py'],input=json.dumps(request),capture_output=True,text=True,check=True,timeout=15)
     metadata=json.loads(result.stdout)
     assert node in metadata['failed'], metadata
-print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4}))
+name='sqlglot/optimizer/scope.py'
+source=(root/name).read_text()
+modified='# an apparently harmless comment\n'+source
+patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
+with tempfile.TemporaryDirectory() as temporary:
+    data=pathlib.Path(temporary)
+    (data/'commits').mkdir()
+    (data/'commits'/'comment.patch').write_text(patch)
+    (data/'tests.json').write_text(json.dumps({'tests':tests}))
+    result=subprocess.run([sys.executable,'/app/selector.py','--source',str(root),'--data',str(data)],capture_output=True,text=True,check=True,timeout=15)
+    output=json.loads(result.stdout)
+    numbers=[number for worker in output['workers'] for number in worker]
+    assert len(numbers)==len(tests) and set(numbers)=={t['number'] for t in tests}
+print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'default_comment_selection_covers_every_test':True}))
 """
 
 
