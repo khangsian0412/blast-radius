@@ -47,6 +47,7 @@ def main():
             ("observer_source_reads", ("source_reads",)),
             ("metadata_observers", ("metadata_observers",)),
             ("metadata_sites", ("metadata_sites",)),
+            ("scalar_reads", ("scalar_reads",)),
         ):
             for key, names in extra.pop(source_key, {}).items():
                 bits = readers(names)

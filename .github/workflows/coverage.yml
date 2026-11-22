@@ -5,7 +5,7 @@ on:
       kind:
         description: Baseline measurements to rebuild
         type: choice
-        options: [all, coverage, profiles, types, dictionaries, imports, shared, observers, enums]
+        options: [all, coverage, profiles, types, dictionaries, imports, shared, observers, enums, scalars]
         default: all
 permissions:
   contents: read
@@ -52,6 +52,11 @@ jobs:
         run: |
           mkdir -p profiles
           docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_enums.py baseline maps/coverage.json profiles/enums.json
+      - name: Measure reflective scalar reads
+        if: inputs.kind == 'scalars'
+        run: |
+          mkdir -p profiles
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_scalars.py baseline profiles/scalars.json
       - uses: actions/upload-artifact@v4
         if: inputs.kind == 'all' || inputs.kind == 'coverage'
         with:
