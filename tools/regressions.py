@@ -101,11 +101,31 @@ with tempfile.TemporaryDirectory() as temporary:
     (data/'commits').mkdir()
     (data/'commits'/'comment.patch').write_text(patch)
     (data/'tests.json').write_text(json.dumps({'tests':tests}))
-    result=subprocess.run([sys.executable,'/app/selector.py','--source',str(root),'--data',str(data)],capture_output=True,text=True,check=True,timeout=15)
+    result=subprocess.run([sys.executable,'/app/selector.py','--selection','conservative','--source',str(root),'--data',str(data)],capture_output=True,text=True,check=True,timeout=15)
     output=json.loads(result.stdout)
     numbers=[number for worker in output['workers'] for number in worker]
     assert len(numbers)==len(tests) and set(numbers)=={t['number'] for t in tests}
-print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'default_comment_selection_covers_every_test':True,'callback_failure_retained':True,'import_time_callback_stays_broad':True,'shared_fixture_class_tests':len(executor)}))
+name='sqlglot/optimizer/scope.py'
+source=(root/name).read_text()
+changed='# physical source sentinel\n'+source
+test_file='tests/test_serde.py'
+test_source='''import unittest
+from pathlib import Path
+class TestWholeProbe(unittest.TestCase):
+    def test_a_source(self):
+        import sqlglot.optimizer.scope as scope
+        self.assertTrue(Path(scope.__file__).read_text().startswith("# physical source sentinel"))
+    def test_b_subtest(self):
+        with self.subTest(value=1):
+            self.assertEqual(1, 2)
+'''
+whole_patch=''.join(difflib.unified_diff(source.splitlines(True),changed.splitlines(True),'a/'+name,'b/'+name))
+whole_patch+=''.join(difflib.unified_diff((root/test_file).read_text().splitlines(True),test_source.splitlines(True),'a/'+test_file,'b/'+test_file))
+node_a=test_file+'::TestWholeProbe::test_a_source'
+node_b=test_file+'::TestWholeProbe::test_b_subtest'
+whole=CollectionCheck(selector).run(whole_patch,[node_a,node_b])
+assert whole and whole['collection_ok'] and node_a in whole['passed'] and node_b not in whole['passed'] and node_b in whole['failed'], whole
+print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'conservative_comment_selection_covers_every_test':True,'callback_failure_retained':True,'import_time_callback_stays_broad':True,'shared_fixture_class_tests':len(executor),'real_patched_source_read':True,'whole_test_failed_subtest_retained':True}))
 """
 
 

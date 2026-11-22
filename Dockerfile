@@ -5,6 +5,8 @@ COPY tools/requirements.lock /build/requirements.lock
 RUN pip install --no-cache-dir -r /build/requirements.lock
 COPY tools/fetch_baseline.py /build/fetch_baseline.py
 RUN python /build/fetch_baseline.py /opt/sqlglot && chmod -R a+rX /opt/sqlglot
+RUN python -m compileall -q --invalidation-mode checked-hash /opt/sqlglot/sqlglot /opt/sqlglot/tests
+RUN cd /opt/sqlglot && env -u PYTHONDONTWRITEBYTECODE python -m pytest tests --collect-only -q -o addopts= -p no:cacheprovider > /dev/null
 COPY selector.py verification.py probe.py collection_check.py /app/
 COPY maps /app/maps
 RUN chmod -R a+rX /app

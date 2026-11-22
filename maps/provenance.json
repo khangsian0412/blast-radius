@@ -1,7 +1,7 @@
 {
   "baseline_commit": "eb11aec4be8cb2122afe713a4816662c3f0fb2fa",
   "baseline_archive_sha256": "93b2445f15f395b81c20556777ece19a6c7507df950f13fa9fac4a3be739af0d",
-  "coverage_sha256": "d5b40c74c66bcdff7fbf0b6347451e86c39994d1f4c6aac8b50385f0318bae3c",
+  "coverage_sha256": "503a2f0e4a41767f9bb13ee7ceb8506ab6e758a1df73af7262d7ceace00aa3da",
   "container_image": "python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90",
   "measurements": [
     {
@@ -59,6 +59,18 @@
       "kind": "canonical enum operand membership, all baseline tests passing",
       "environment": "linux/amd64",
       "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44991168503",
+      "baseline_only": true
+    },
+    {
+      "kind": "verified child audit startup and code/source observations",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44992357184",
+      "baseline_only": true
+    },
+    {
+      "kind": "scalar flag getters and namespace reflection, including shared scopes and serialized pool tasks",
+      "environment": "linux/amd64",
+      "workflow": "https://github.com/khangsian0412/blast-radius/actions/runs/44993577388",
       "baseline_only": true
     }
   ],

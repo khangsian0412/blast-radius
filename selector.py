@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 import re
 import sys
 import types
+import warnings
 
 BASELINE = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
 HERE = Path(__file__).resolve().parent
@@ -210,6 +211,7 @@ class Selector:
         self.file_masks = {}
         self.imports = None
         self.reasons = []
+        self.compiler_diagnostics = {}
 
     def lines(self, name: str) -> dict[int, int]:
         if name not in self.line_cache:
@@ -777,6 +779,16 @@ class Selector:
     def finish_selection(self, result):
         return result or self.all
 
+    def compilation_safe(self, name, old, new):
+        def diagnostics(source):
+            with warnings.catch_warnings(record=True) as messages:
+                warnings.simplefilter("always")
+                compile(source.encode("utf-8"), name, "exec", dont_inherit=True)
+            return [(message.category.__name__, str(message.message), message.lineno) for message in messages]
+        if name not in self.compiler_diagnostics:
+            self.compiler_diagnostics[name] = diagnostics(old)
+        return diagnostics(new) == self.compiler_diagnostics[name]
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -810,6 +822,8 @@ class Selector:
                     return self.all
                 old = self.read(name)
                 new, removed, inserted = apply_change(old, change)
+                if not self.compilation_safe(name, old, new):
+                    return self.all
                 before = self.tree(name)
                 after = ast.parse(new.encode("utf-8"), type_comments=True)
                 if ast.dump(before, include_attributes=False) == ast.dump(
@@ -843,6 +857,7 @@ class Selector:
                 classes = [node for node in ast.walk(before) if isinstance(node, ast.ClassDef)]
                 initial = self.map["files"][name].get("init", ())
                 affected = 0
+                proved_unexecuted = False
                 for line in removed:
                     owners = [node for node in functions if node.lineno <= line <= node.end_lineno]
                     if not owners:
@@ -875,11 +890,13 @@ class Selector:
                         for node in functions for decorator in getattr(node, "decorator_list", ())
                     ):
                         return self.all
+                    self._unexecuted_entry = False
                     function_users = self.body_mask(name, owner, line, before, after)
-                    if not function_users:
+                    if not function_users and not self._unexecuted_entry:
                         return self.all
+                    proved_unexecuted |= self._unexecuted_entry
                     affected |= function_users
-                if not affected:
+                if not affected and not proved_unexecuted:
                     return self.all
                 result |= affected
         except (OSError, UnicodeError, ValueError, SyntaxError, IndexError, RecursionError, TypeError):
@@ -1035,13 +1052,15 @@ class OptimizedSelector(Selector):
 
     def select_conservative(self, patch):
         self.reasons = []
+        self.unread_setting = False
+        self.scalar_setting = False
         try:
             planned = self.configuration_plan(patch)
         except (OSError, UnicodeError, ValueError, SyntaxError, TypeError, IndexError, RecursionError):
             planned = None
         if planned is not None and planned != self.all:
-            if self.import_validator is not None and self.import_validator(patch):
-                self.reasons.append("literal setting: class users and cached dependencies; patched collection passed")
+            if self.unread_setting or self.scalar_setting or (self.import_validator is not None and self.import_validator(patch)):
+                self.reasons.append("immutable dictionary values have no baseline reads" if self.unread_setting else "measured scalar consumers, including namespace reflection" if self.scalar_setting else "setting consumers retained; patched collection passed")
                 return planned
             return self.all
         return super().select_conservative(patch)
@@ -1058,7 +1077,9 @@ class OptimizedSelector(Selector):
             return None
         before = self.tree(name)
         new, _, _ = apply_change(self.read(name), change)
-        after = ast.parse(new, type_comments=True)
+        if not self.compilation_safe(name, self.read(name), new):
+            return None
+        after = ast.parse(new.encode("utf-8"), type_comments=True)
 
         def assignments(tree):
             result = {}
@@ -1096,6 +1117,26 @@ class OptimizedSelector(Selector):
         classes = self.map.get("classes", {})
         if owner not in classes:
             return None
+        # This is only a zero-read proof, never a per-key reader reduction.
+        # Any import-time value access, escape, mutation, or observed read
+        # disables it. Shared setup attribution cannot turn a read into zero.
+        unread = self.dictionary_mask(field, old_statement.value, new_statement.value, filename=name)
+        if unread == 0:
+            self.unread_setting = True
+            return self.unknown | self.always | self.code_observers(name, before, after) | self.source_readers(name)
+        if (
+            self.map.get("scalar_collection") and field in self.map.get("scalar_fields", ())
+            and field not in self.map.get("scalar_initialization", ())
+            and field not in self.map.get("attribute_init", ())
+            and getattr(old_statement.value, "lineno", -1) not in self.map.get("subprocess_lines", {}).get(name, ())
+            and isinstance(old_statement.value, (ast.Constant, ast.UnaryOp))
+            and isinstance(new_statement.value, (ast.Constant, ast.UnaryOp))
+        ):
+            previous_value, replacement_value = ast.literal_eval(old_statement.value), ast.literal_eval(new_statement.value)
+            if type(previous_value) is type(replacement_value) and type(previous_value) in (str, bool, int, float, type(None)):
+                self.scalar_setting = True
+                readers = self.pool[self.map.get("scalar_reads", {}).get(field, 0)] | self.pool[self.map.get("attributes", {}).get(field, 0)]
+                return readers | self.unknown | self.always | self.code_observers(name, before, after) | self.source_readers(name)
         dependencies = self.class_dependency_mask(owner, [field])
         dependencies |= self.pool[classes[owner]] | self.pool[self.map.get("attributes", {}).get(field, 0)]
         if not dependencies:
@@ -1119,8 +1160,11 @@ class OptimizedSelector(Selector):
     def observers(self, name):
         return (
             self.pool[self.map.get("metadata_observers", {}).get(name, 0)]
-            | self.pool[self.map.get("observer_children", 0)]
+            | self.unverified_children()
         )
+
+    def unverified_children(self):
+        return self.pool[self.map.get("observer_children", 0)] & ~self.pool[self.map.get("verified_observer_children", 0)]
 
     def body_mask(self, name, owner, line, before, after):
         whole = super().body_mask(name, owner, line, before, after)
@@ -1154,6 +1198,9 @@ class OptimizedSelector(Selector):
             if isinstance(node, ast.expr) and node.lineno <= line <= node.end_lineno
         )
         direct = union(self.lines(name).get(entry, 0) for entry in entries)
+        if not direct and whole:
+            self._unexecuted_entry = True
+            return 0
         return direct or whole
 
     def code_observers(self, name, before, after):
@@ -1177,7 +1224,7 @@ class OptimizedSelector(Selector):
             return self.all
         return (
             union(self.pool[self.map.get("metadata_sites", {}).get(site, 0)] for site in changed)
-            | self.pool[self.map.get("observer_children", 0)]
+            | self.unverified_children()
         )
 
 
@@ -1212,7 +1259,7 @@ def main():
     parser.add_argument("--no-probe", action="store_true")
     parser.add_argument(
         "--selection", choices=("conservative", "optimized", "precise", "complete"),
-        default="conservative",
+        default="optimized",
         help="conservative is accuracy-first; complete selects every provided test",
     )
     args = parser.parse_args()
@@ -1227,6 +1274,7 @@ def main():
     if args.selection == "optimized":
         from collection_check import CollectionCheck
         selector.import_validator = CollectionCheck(selector)
+    whole_checks = CollectionCheck(selector, budget=20) if args.selection == "optimized" and not args.no_probe else None
     from verification import Verifier
 
     verifier = Verifier(selector) if args.selection == "precise" and not args.no_probe else None
@@ -1244,6 +1292,11 @@ def main():
         if verifier:
             selected = verifier.check(content, selected)
             selector.reasons.extend(verifier.log)
+        if whole_checks:
+            previous = selected
+            selected = whole_checks.check_tests(content, selected)
+            if selected != previous:
+                selector.reasons.append(f"{(previous ^ selected).bit_count()} complete tests passed on real patched files")
         chosen = [tests[i] for i in iter_bits(selected)]
         workers = schedule(chosen)
         total += len(chosen)

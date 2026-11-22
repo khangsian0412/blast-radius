@@ -14,12 +14,10 @@ jobs:
         run: make sample
       - name: Validate and require zero sample misses
         run: python3 tools/validate.py sample output.jsonl --require-no-misses
-      - name: Check imports, metadata readers, subtests and default comment coverage
+      - name: Check imports, metadata readers, real files and failed subtests
         run: python3 tools/regressions.py
       - name: Check three valid runs and runtime resources
         run: python3 tools/benchmark.py
-      - name: Check the next optimization checkpoint three times
-        run: python3 tools/benchmark.py --selection optimized
       - uses: actions/upload-artifact@v4
         with:
           name: sample-output

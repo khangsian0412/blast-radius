@@ -158,6 +158,66 @@ class ObserverTests(unittest.TestCase):
         selector = self.closure_setting()
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("make_callback(True)", "other_callback(True)"))), 15)
 
+    def unread_dictionary(self):
+        selector = self.configured()
+        self.source = "class Example:\n    VALUE = {'x': (1, 2)}\n"
+        (self.root / self.name).write_text(self.source)
+        selector.file_cache.clear()
+        self.data["dictionaries"] = {"sqlglot.example.Example.VALUE": {"keys": ["x"], "reads": {}, "unsafe": False}}
+        return selector
+
+    def test_zero_value_reads_keep_source_observers_without_an_import_probe(self):
+        selector = self.unread_dictionary()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("(1, 2)", "(1, 3)"))), 4)
+
+    def test_one_recorded_value_read_prevents_the_zero_read_proof(self):
+        selector = self.unread_dictionary()
+        self.data["dictionaries"]["sqlglot.example.Example.VALUE"]["reads"] = {"x": 1}
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("(1, 2)", "(1, 3)"))), 15)
+
+    def test_escaped_dictionary_cannot_use_an_unread_value_proof(self):
+        selector = self.unread_dictionary()
+        self.data["dictionaries"]["sqlglot.example.Example.VALUE"]["unsafe"] = True
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("(1, 2)", "(1, 3)"))), 15)
+
+    def test_changed_encoding_cookie_cannot_hide_an_import_failure(self):
+        selector = self.unread_dictionary()
+        self.source += "# Unicode: é\n"
+        (self.root / self.name).write_text(self.source)
+        selector.file_cache.clear()
+        changed = "# coding: ascii\n" + self.source.replace("(1, 2)", "(1, 3)")
+        self.assertEqual(selector.select_conservative(diff(self.source, changed)), 15)
+
+    def test_unexecuted_entry_keeps_metadata_readers_without_unrelated_callers(self):
+        self.source = "def f(x):\n    if x:\n        return 1\n    if False:\n        return 2\n    return 3\n"
+        self.data["files"][self.name]["lines"] = {"2": 1, "3": 1, "4": 2, "6": 2}
+        self.data["metadata_sites_complete"] = True
+        selector = self.optimized()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 2", "return 4"))), 4)
+
+    def test_new_compile_warning_is_import_sensitive_even_in_unexecuted_code(self):
+        self.source = "def f(x):\n    if False:\n        return x == 1\n    return 3\n"
+        self.data["files"][self.name]["lines"] = {"2": 1, "4": 2}
+        self.data["metadata_sites_complete"] = True
+        selector = self.optimized()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("x == 1", "x is 1"))), 15)
+
+    def test_verified_child_still_keeps_its_actual_code_inspection_dependency(self):
+        selector = self.optimized()
+        self.data.update(observer_children=1, verified_observer_children=1)
+        self.data["metadata_observers"][self.name] = 1
+        self.assertEqual(selector.select_conservative(diff(self.source, "# comment\n" + self.source)), 5)
+
+    def test_measured_scalar_keeps_direct_and_reflective_consumers(self):
+        selector = self.configured()
+        self.data.update(scalar_collection={"baseline": True}, scalar_fields=["sqlglot.example.Example.VALUE"], scalar_reads={"sqlglot.example.Example.VALUE": 1})
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("VALUE = 1", "VALUE = 2"))), 5)
+
+    def test_collection_time_scalar_read_disables_runtime_only_reduction(self):
+        selector = self.configured()
+        self.data.update(scalar_collection={"baseline": True}, scalar_fields=["sqlglot.example.Example.VALUE"], scalar_reads={"sqlglot.example.Example.VALUE": 1}, scalar_initialization=["sqlglot.example.Example.VALUE"])
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("VALUE = 1", "VALUE = 2"))), 15)
+
 
 if __name__ == "__main__":
     unittest.main()
