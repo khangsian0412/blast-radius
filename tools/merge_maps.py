@@ -44,7 +44,7 @@ def main():
             ("shared_source_reads", ("source_reads",)),
             ("shared_classes", ("classes", "classes_outside")),
             ("shared_attributes", ("attributes", "attributes_outside")),
-            ("observer_source_reads", ("source_reads",)),
+            ("observer_source_reads", ("source_reads", "source_observers")),
             ("metadata_observers", ("metadata_observers",)),
             ("metadata_sites", ("metadata_sites",)),
             ("scalar_reads", ("scalar_reads",)),

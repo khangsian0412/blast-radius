@@ -30,6 +30,7 @@ def main():
     active = [None]
     scopes, class_tags, module_tags = {}, {}, {}
     metadata, initialization, source_reads = {}, set(), {}
+    source_initialization = set()
     metadata_sites, initialization_sites = {}, set()
     children = set()
     expected_children, child_starts = {}, {}
@@ -91,10 +92,13 @@ def main():
                 else:
                     record(metadata, name[len(prefix):])
                     record(metadata_sites, site)
-        elif event == "open" and active[0] is not None and isinstance(values[0], str):
+        elif event == "open" and isinstance(values[0], str):
             name = os.path.abspath(values[0])
             if name.startswith(prefix) and name.endswith(".py") and not import_read():
-                record(source_reads, name[len(prefix):])
+                if active[0] is None:
+                    source_initialization.add(name[len(prefix):])
+                else:
+                    record(source_reads, name[len(prefix):])
         elif event == "subprocess.Popen" and active[0] is not None:
             children.add(active[0])
             expected_children[active[0]] = expected_children.get(active[0], 0) + 1
@@ -168,6 +172,10 @@ def main():
                 continue
             table = metadata_sites if kind == "code" else metadata if kind == "metadata" else source_reads
             table.setdefault(name, set()).add(tag)
+            if kind == "source" and "::" in tag:
+                shared = "@class:" + tag.rsplit("::", 1)[0]
+                if shared in scopes:
+                    table[name].add(shared)
 
     def members(contexts):
         return sorted({node for tag in contexts for node in scopes.get(tag, ())})
@@ -179,6 +187,8 @@ def main():
         "metadata_initialization_sites": sorted(initialization_sites),
         "metadata_sites_complete": True,
         "observer_source_reads": {name: members(tags) for name, tags in sorted(source_reads.items())},
+        "source_initialization": sorted(source_initialization),
+        "source_observation_complete": True,
         "observer_children": members(children),
         "verified_observer_children": members(tag for tag, expected in expected_children.items() if len(child_starts.get(tag, ())) == expected),
         "observer_collection": {"python": sys.version.split()[0], "platform": sys.platform, "tests": len(scopes["@session"]), "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
@@ -245,7 +255,9 @@ def import_read():
     frame = sys._getframe(1)
     while frame is not None:
         code = frame.f_code
-        if code.co_filename == "<frozen importlib._bootstrap_external>" and code.co_name in {"get_code", "get_data"}:
+        # get_source() also uses get_data(); it is a genuine source observer.
+        # Only get_code() identifies loading executable module bytecode.
+        if code.co_filename == "<frozen importlib._bootstrap_external>" and code.co_name == "get_code":
             return True
         frame = frame.f_back
     return False
