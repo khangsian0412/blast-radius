@@ -30,6 +30,7 @@ def main():
     active = [None]
     scopes, class_tags, module_tags = {}, {}, {}
     metadata, initialization, source_reads = {}, set(), {}
+    metadata_sites, initialization_sites = {}, set()
     children = set()
     failures = []
     prefix = str(root) + "/"
@@ -50,7 +51,7 @@ def main():
             if os.getpid() == parent_pid:
                 table.setdefault(name, set()).add(active[0])
             else:
-                kind = "metadata" if table is metadata else "source"
+                kind = "code" if table is metadata_sites else "metadata" if table is metadata else "source"
                 entry = (kind, name, active[0])
                 if entry not in child_seen:
                     child_seen.add(entry)
@@ -71,19 +72,24 @@ def main():
     def observe(event, values):
         if event == "object.__getattr__":
             obj, field = values
-            name = None
+            name, code = None, None
             if field == "__code__" and isinstance(obj, types.FunctionType):
                 if obj.__module__ and obj.__module__.startswith("sqlglot"):
-                    name = obj.__code__.co_filename
+                    code = obj.__code__
             elif field == "f_code" and isinstance(obj, types.FrameType):
-                name = obj.f_code.co_filename
+                code = obj.f_code
             elif field == "tb_frame" and isinstance(obj, types.TracebackType):
-                name = obj.tb_frame.f_code.co_filename
+                code = obj.tb_frame.f_code
+            if code is not None:
+                name = code.co_filename
             if name and name.startswith(prefix + "sqlglot/"):
+                site = f"{name[len(prefix):]}:{code.co_firstlineno}"
                 if active[0] is None:
                     initialization.add(name[len(prefix):])
+                    initialization_sites.add(site)
                 else:
                     record(metadata, name[len(prefix):])
+                    record(metadata_sites, site)
         elif event == "open" and active[0] is not None and isinstance(values[0], str):
             name = os.path.abspath(values[0])
             if name.startswith(prefix) and name.endswith(".py") and not import_read():
@@ -155,7 +161,8 @@ def main():
             kind, name, tag = json.loads(line)
             if tag not in scopes:
                 raise SystemExit("Child observer lost its pytest scope")
-            (metadata if kind == "metadata" else source_reads).setdefault(name, set()).add(tag)
+            table = metadata_sites if kind == "code" else metadata if kind == "metadata" else source_reads
+            table.setdefault(name, set()).add(tag)
 
     def members(contexts):
         return sorted({node for tag in contexts for node in scopes.get(tag, ())})
@@ -163,6 +170,9 @@ def main():
     payload = {
         "metadata_observers": {name: members(tags) for name, tags in sorted(metadata.items())},
         "metadata_initialization": sorted(initialization),
+        "metadata_sites": {name: members(tags) for name, tags in sorted(metadata_sites.items())},
+        "metadata_initialization_sites": sorted(initialization_sites),
+        "metadata_sites_complete": True,
         "observer_source_reads": {name: members(tags) for name, tags in sorted(source_reads.items())},
         "observer_children": members(children),
         "observer_collection": {"python": sys.version.split()[0], "platform": sys.platform, "tests": len(scopes["@session"]), "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
@@ -187,7 +197,7 @@ def child_hook():
             return
         busy[0] = True
         try:
-            kind, name = None, None
+            kind, name, code = None, None, None
             if event == "open" and isinstance(values[0], str):
                 name = os.path.abspath(values[0])
                 if name.startswith(root) and name.endswith(".py") and not import_read():
@@ -195,11 +205,13 @@ def child_hook():
             elif event == "object.__getattr__":
                 obj, field = values
                 if field == "__code__" and isinstance(obj, types.FunctionType):
-                    name = obj.__code__.co_filename
+                    code = obj.__code__
                 elif field == "f_code" and isinstance(obj, types.FrameType):
-                    name = obj.f_code.co_filename
+                    code = obj.f_code
                 elif field == "tb_frame" and isinstance(obj, types.TracebackType):
-                    name = obj.tb_frame.f_code.co_filename
+                    code = obj.tb_frame.f_code
+                if code is not None:
+                    name = code.co_filename
                 if name and name.startswith(root + "sqlglot/"):
                     kind = "metadata"
             if kind:
@@ -208,6 +220,12 @@ def child_hook():
                     seen.add(entry)
                     with (Path(output) / f"{os.getpid()}.jsonl").open("a") as stream:
                         stream.write(json.dumps(entry) + "\n")
+                if kind == "metadata":
+                    entry = ("code", f"{name[len(root):]}:{code.co_firstlineno}", tag)
+                    if entry not in seen:
+                        seen.add(entry)
+                        with (Path(output) / f"{os.getpid()}.jsonl").open("a") as stream:
+                            stream.write(json.dumps(entry) + "\n")
         finally:
             busy[0] = False
 
