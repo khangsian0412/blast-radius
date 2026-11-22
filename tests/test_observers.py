@@ -134,6 +134,30 @@ class ObserverTests(unittest.TestCase):
         del self.data["metadata_sites_complete"]
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 7)
 
+    def closure_setting(self, extra=""):
+        self.source = (
+            "def make_callback(enabled):\n" + extra
+            + "    def callback(x):\n        return x if enabled else 0\n"
+            + "    return callback\n\nclass Example:\n    VALUE = make_callback(True)\n"
+        )
+        self.data.update(metadata_sites_complete=True, attribute_dependencies_complete=True,
+            classes={"sqlglot.example.Example": 2}, attributes={"sqlglot.example.Example.VALUE": 1})
+        selector = self.optimized()
+        selector.import_validator = lambda patch: True
+        return selector
+
+    def test_closure_parameter_change_keeps_all_setting_consumers(self):
+        selector = self.closure_setting()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("make_callback(True)", "make_callback(False)"))), 7)
+
+    def test_factory_that_performs_other_work_keeps_every_test(self):
+        selector = self.closure_setting("    print(enabled)\n")
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("make_callback(True)", "make_callback(False)"))), 15)
+
+    def test_changing_the_factory_itself_keeps_every_test(self):
+        selector = self.closure_setting()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("make_callback(True)", "other_callback(True)"))), 15)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -938,6 +938,101 @@ class OptimizedSelector(Selector):
             return False
         return self.equivalent(name, before, copy.deepcopy(after), measured=True)
 
+    def closure_factory(self, filename, expression, visited=()):
+        if not isinstance(expression, ast.Name) or len(visited) >= 8:
+            return False
+        point = filename, expression.id
+        if point in visited:
+            return False
+        if not (self.source / filename).is_file():
+            package = filename.removesuffix(".py") + "/__init__.py"
+            if not (self.source / package).is_file():
+                return False
+            filename = package
+        tree = self.tree(filename)
+        bindings = []
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == expression.id:
+                bindings.append(node)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "*":
+                        return False
+                    if (alias.asname or alias.name) == expression.id:
+                        if node.level or not node.module or not node.module.startswith("sqlglot"):
+                            return False
+                        bindings.append((node.module.replace(".", "/") + ".py", alias.name))
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(target, ast.Name) and target.id == expression.id for target in targets):
+                    return False
+            elif isinstance(node, (ast.Import, ast.ClassDef)):
+                bound = [alias.asname or alias.name.split(".")[0] for alias in node.names] if isinstance(node, ast.Import) else [node.name]
+                if expression.id in bound:
+                    return False
+        if len(bindings) != 1:
+            return False
+        function = bindings[0]
+        if isinstance(function, tuple):
+            return self.closure_factory(function[0], ast.Name(id=function[1]), visited + (point,))
+        if function.decorator_list or getattr(function, "type_params", ()):
+            return False
+        body = list(function.body)
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+            body.pop(0)
+        if len(body) == 1 and isinstance(body[0], ast.Return) and isinstance(body[0].value, ast.Lambda):
+            inner = body[0].value
+        elif (
+            len(body) == 2 and isinstance(body[0], ast.FunctionDef)
+            and isinstance(body[1], ast.Return) and isinstance(body[1].value, ast.Name)
+            and body[1].value.id == body[0].name and not body[0].decorator_list
+        ):
+            inner = body[0]
+        else:
+            return False
+        if inner.args.defaults or any(value is not None for value in inner.args.kw_defaults) or getattr(inner, "type_params", ()):
+            return False
+        future_annotations = any(isinstance(node, ast.ImportFrom) and node.module == "__future__" and any(alias.name == "annotations" for alias in node.names) for node in tree.body)
+        annotated_args = [*inner.args.args, *inner.args.posonlyargs, *inner.args.kwonlyargs, *([inner.args.vararg] if inner.args.vararg else []), *([inner.args.kwarg] if inner.args.kwarg else [])]
+        if isinstance(inner, ast.FunctionDef) and not future_annotations and (inner.returns or any(arg.annotation for arg in annotated_args)):
+            return False
+        return True
+
+    def setting_values_safe(self, name, before, after):
+        if ast.dump(before) == ast.dump(after):
+            return True
+        try:
+            a, b = ast.literal_eval(before), ast.literal_eval(after)
+        except (ValueError, TypeError):
+            if isinstance(before, ast.Dict) and isinstance(after, ast.Dict) and len(before.keys) == len(after.keys):
+                keys_equal = all((a is None and b is None) or (a is not None and b is not None and ast.dump(a) == ast.dump(b)) for a, b in zip(before.keys, after.keys))
+                return keys_equal and all(self.setting_values_safe(name, a, b) for a, b in zip(before.values, after.values))
+            if isinstance(before, ast.Call) and isinstance(after, ast.Call) and ast.dump(before.func) == ast.dump(after.func) and len(before.args) == len(after.args) and [k.arg for k in before.keywords] == [k.arg for k in after.keywords] and self.closure_factory(name, before.func):
+                # Only literal arguments may change. The factory's only work is
+                # creating and returning an undecorated closure; its body does
+                # not run until a measured consumer invokes it.
+                pairs = list(zip(before.args, after.args)) + [(a.value, b.value) for a, b in zip(before.keywords, after.keywords)]
+                for a, b in pairs:
+                    if ast.dump(a) != ast.dump(b):
+                        try:
+                            x, y = ast.literal_eval(a), ast.literal_eval(b)
+                        except (ValueError, TypeError):
+                            return False
+                        if type(x) is not type(y) or type(x) not in (str, bool, int, float, type(None)):
+                            return False
+                return True
+            return False
+
+        def same_shape(a, b):
+            if type(a) is not type(b):
+                return False
+            if type(a) is dict:
+                return list(a) == list(b) and all(same_shape(a[key], b[key]) for key in a)
+            if type(a) in (list, tuple):
+                return len(a) == len(b) and all(same_shape(x, y) for x, y in zip(a, b))
+            return type(a) in (str, bool, int, float, type(None))
+        return same_shape(a, b)
+
     def select_conservative(self, patch):
         self.reasons = []
         try:
@@ -987,18 +1082,7 @@ class OptimizedSelector(Selector):
         targets = old_statement.targets if isinstance(old_statement, ast.Assign) else [old_statement.target]
         if len(targets) != 1 or not isinstance(targets[0], ast.Name) or targets[0].id.startswith("__"):
             return None
-        old_value, new_value = ast.literal_eval(old_statement.value), ast.literal_eval(new_statement.value)
-
-        def same_shape(a, b):
-            if type(a) is not type(b):
-                return False
-            if type(a) is dict:
-                return list(a) == list(b) and all(same_shape(a[key], b[key]) for key in a)
-            if type(a) in (list, tuple):
-                return len(a) == len(b) and all(same_shape(x, y) for x, y in zip(a, b))
-            return type(a) in (str, bool, int, float, type(None))
-
-        if not same_shape(old_value, new_value):
+        if not self.setting_values_safe(name, old_statement.value, new_statement.value):
             return None
         replacement = new_statement.value
         new_statement.value = old_statement.value
