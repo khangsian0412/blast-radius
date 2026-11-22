@@ -771,6 +771,12 @@ class Selector:
     def equivalent_body(self, name, before, after):
         return False
 
+    def source_readers(self, name=None):
+        return union(self.pool[index] for index in self.map.get("source_reads", {}).values()) if name is None else 0
+
+    def finish_selection(self, result):
+        return result or self.all
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -780,13 +786,12 @@ class Selector:
         No patched-test probe is allowed to remove this selection.
         """
         self.reasons = []
-        readers = union(
-            self.pool[index] for index in self.map.get("source_reads", {}).values()
-        )
+        readers = self.source_readers()
         result = self.unknown | self.always | readers
         try:
             for change in parse_patch(patch):
                 name = change.old
+                result |= self.source_readers(name)
                 if name == change.new and name in self.map["fixtures"]:
                     if not self.map.get("shared_collection"):
                         return self.all
@@ -880,7 +885,7 @@ class Selector:
         except (OSError, UnicodeError, ValueError, SyntaxError, IndexError, RecursionError, TypeError):
             self.reasons.append("uncertain analysis: full inventory")
             return self.all
-        return result or self.all
+        return self.finish_selection(result)
 
     def select(self, patch: str) -> int:
         self.reasons = []
@@ -919,6 +924,14 @@ class OptimizedSelector(Selector):
     """Measured reductions, with the confirmed conservative policy as fallback."""
 
     import_validator = None
+
+    def source_readers(self, name=None):
+        if not self.map.get("metadata_sites_complete"):
+            return super().source_readers(name)
+        return self.pool[self.map.get("source_reads", {}).get(name, 0)] if name is not None else 0
+
+    def finish_selection(self, result):
+        return result if self.map.get("metadata_sites_complete") else super().finish_selection(result)
 
     def equivalent_body(self, name, before, after):
         if not self.map.get("type_profiles") or not self.map.get("metadata_sites_complete"):
@@ -1005,7 +1018,7 @@ class OptimizedSelector(Selector):
             return None
         return (
             dependencies | self.unknown | self.always | self.code_observers(name, before, after)
-            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+            | self.source_readers(name)
         )
 
     def source_only_mask(self, name):
@@ -1016,7 +1029,7 @@ class OptimizedSelector(Selector):
         # Every other file in a multi-file patch is still analyzed independently.
         return (
             self.observers(name)
-            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+            | self.source_readers(name)
         )
 
     def observers(self, name):

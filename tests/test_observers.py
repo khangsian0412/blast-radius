@@ -123,6 +123,17 @@ class ObserverTests(unittest.TestCase):
         self.data["metadata_sites"] = {self.name + ":1": 2}
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace(" is ", " == "))), 6)
 
+    def test_reading_another_source_file_is_not_a_dependency(self):
+        selector = self.branching_body()
+        self.data["source_reads"] = {"sqlglot/other.py": 3}
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 1)
+
+    def test_legacy_maps_keep_the_global_source_reader_guard(self):
+        selector = self.branching_body()
+        self.data["source_reads"] = {"sqlglot/other.py": 3}
+        del self.data["metadata_sites_complete"]
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 7)
+
 
 if __name__ == "__main__":
     unittest.main()
