@@ -144,33 +144,50 @@ def overlay(source, destination, changes, prefix=""):
 
 
 class CollectionCheck:
-    def __init__(self, selector, budget=20, backend=None):
+    def __init__(self, selector, budget=20, backend=None, allow_tests=True):
         self.selector = selector
         self.used = 0.0
         self.budget = budget
         self.deadline = time.monotonic() + 120
         self.backend = backend
+        self.cached_check = None
+        self.allow_tests = allow_tests
 
     def __call__(self, patch):
         return self.run(patch) == {"collection_ok": True}
 
-    def check_tests(self, patch, selected):
+    def eligible_tests(self, patch, selected):
         targets = [self.selector.tests[i] for i in iter_bits(selected)]
         if not targets or len(targets) > 50 or sum(test["seconds"] for test in targets) > 1.0:
-            return selected
+            return None
         if len(targets) == 1 and getattr(self.selector, "execution_changed", True):
-            return selected
+            return None
         # Resource-reader tests often launch a large worker pool. Their recorded
         # duration omits the cold verification startup, so keep them directly.
         try:
             if any(not (change.old or "").endswith(".py") for change in parse_patch(patch)):
-                return selected
+                return None
         except ValueError:
-            return selected
+            return None
         names = {test["id"] for test in targets}
         if any(item["test"] in names for item in self.selector.map.get("task_ids", ())):
+            return None
+        return [test["id"] for test in targets]
+
+    def validate_selection(self, patch, selected):
+        targets = self.eligible_tests(patch, selected) if self.allow_tests else None
+        if targets is None:
+            return self(patch)
+        report = self.run(patch, targets, require_imports=True)
+        self.cached_check = (patch, tuple(targets), report)
+        return isinstance(report, dict) and report.get("collection_ok") is True
+
+    def check_tests(self, patch, selected):
+        targets = self.eligible_tests(patch, selected)
+        if targets is None:
             return selected
-        report = self.run(patch, [test["id"] for test in targets])
+        cached, self.cached_check = self.cached_check, None
+        report = cached[2] if cached is not None and cached[:2] == (patch, tuple(targets)) else self.run(patch, targets)
         if not isinstance(report, dict) or report.get("collection_ok") is not True:
             return selected
         passed, failed = report.get("passed"), report.get("failed")
@@ -182,7 +199,7 @@ class CollectionCheck:
                 selected &= ~(1 << i)
         return selected
 
-    def run(self, patch, tests=None):
+    def run(self, patch, tests=None, require_imports=False):
         if self.used >= self.budget or time.monotonic() >= self.deadline:
             return None
         started = time.process_time()
@@ -203,6 +220,7 @@ class CollectionCheck:
                 request = {"source": str(root), "modules": [name.removesuffix(".py").replace("/", ".").removesuffix(".__init__") for name in changes if name.endswith(".py")]}
                 if tests is not None:
                     request["tests"] = tests
+                    request["require_imports"] = require_imports
                 if self.backend is not None:
                     request["temporary"] = directory
                     report, cpu = self.backend.run(request, min(8, max(0.1, self.deadline - time.monotonic())))
@@ -237,6 +255,7 @@ def worker(request=None, output=None):
     failures = []
     failed, call_passed, completed = set(), set(), set()
     unsafe = [False]
+    imported_late = [False]
     result = 3
     with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
         try:
@@ -252,6 +271,15 @@ def worker(request=None, output=None):
 
                 def pytest_collection_modifyitems(self, config, items):
                     if "tests" in request:
+                        if request.get("require_imports"):
+                            # Normally full collection has already imported the
+                            # changed module. A late forced import may change
+                            # test initialization, so it can validate collection
+                            # but cannot certify passing tests for removal.
+                            for module in request["modules"]:
+                                if module not in sys.modules:
+                                    imported_late[0] = True
+                                    importlib.import_module(module)
                         targets = set(request["tests"])
                         removed = [item for item in items if item.nodeid not in targets]
                         items[:] = [item for item in items if item.nodeid in targets]
@@ -274,7 +302,7 @@ def worker(request=None, output=None):
         except BaseException:
             passed = False
     if "tests" in request:
-        json.dump({"collection_ok": not failures, "passed": sorted(completed - failed) if not unsafe[0] and result in (0, 1) else [], "failed": sorted(failed)}, output)
+        json.dump({"collection_ok": not failures and result in (0, 1), "passed": sorted(completed - failed) if not unsafe[0] and not imported_late[0] and result in (0, 1) else [], "failed": sorted(failed)}, output)
     else:
         json.dump({"collection_ok": passed}, output)
 

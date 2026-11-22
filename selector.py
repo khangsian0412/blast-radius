@@ -959,7 +959,14 @@ class OptimizedSelector(Selector):
     def equivalent_body(self, name, before, after):
         if not self.map.get("type_profiles") or not self.map.get("metadata_sites_complete"):
             return False
-        return self.equivalent(name, before, copy.deepcopy(after), measured=True)
+        # The comparison normalizer changes only Compare.ops. Restore those
+        # lists even on an error, rather than copying the entire source tree.
+        comparisons = [(node, node.ops) for node in ast.walk(after) if isinstance(node, ast.Compare)]
+        try:
+            return self.equivalent(name, before, after, measured=True)
+        finally:
+            for node, operations in comparisons:
+                node.ops = operations
 
     def closure_factory(self, filename, expression, visited=()):
         if not isinstance(expression, ast.Name) or len(visited) >= 8:
@@ -1066,7 +1073,9 @@ class OptimizedSelector(Selector):
         except (OSError, UnicodeError, ValueError, SyntaxError, TypeError, IndexError, RecursionError):
             planned = None
         if planned is not None and planned != self.all:
-            if self.unread_setting or self.scalar_setting or (self.import_validator is not None and self.import_validator(patch)):
+            validator = self.import_validator
+            validate = getattr(validator, "validate_selection", None)
+            if self.unread_setting or self.scalar_setting or (validator is not None and (validate(patch, planned) if validate is not None else validator(patch))):
                 self.reasons.append("immutable dictionary values have no baseline reads" if self.unread_setting else "measured scalar consumers, including namespace reflection" if self.scalar_setting else "setting consumers retained; patched collection passed")
                 return planned
             return self.all
@@ -1180,15 +1189,18 @@ class OptimizedSelector(Selector):
         if not self.map.get("metadata_sites_complete") or not self.map.get("shared_collection"):
             return whole
 
-        class Statements(ast.NodeTransformer):
-            def visit(self, node):
-                # Preserve statement/scope structure; only expression contents
-                # may differ when using an expression-entry dependency.
-                if isinstance(node, ast.expr):
-                    return ast.Constant(value=None)
-                return super().visit(node)
+        def structure(node):
+            # An immutable signature preserves every non-expression field and
+            # distinguishes node types without modifying or copying the AST.
+            if isinstance(node, ast.expr):
+                return ("$expression",)
+            if isinstance(node, ast.AST):
+                return (type(node).__name__, tuple((field, structure(value)) for field, value in ast.iter_fields(node)))
+            if isinstance(node, list):
+                return tuple(map(structure, node))
+            return node
 
-        if ast.dump(Statements().visit(copy.deepcopy(before))) != ast.dump(Statements().visit(copy.deepcopy(after))):
+        if structure(before) != structure(after):
             return whole
         candidates = [
             node for node in ast.walk(owner)
@@ -1284,7 +1296,7 @@ def main():
     if args.selection == "optimized":
         from collection_check import CheckServer, CollectionCheck
         backend = CheckServer() if sys.platform == "linux" else None
-        selector.import_validator = CollectionCheck(selector, backend=backend)
+        selector.import_validator = CollectionCheck(selector, backend=backend, allow_tests=not args.no_probe)
     whole_checks = selector.import_validator if args.selection == "optimized" and not args.no_probe else None
     from verification import Verifier
 

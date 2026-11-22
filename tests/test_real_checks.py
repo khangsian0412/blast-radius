@@ -39,6 +39,24 @@ class RealCheckTests(unittest.TestCase):
         with patch.object(check, "run", return_value=report):
             self.assertEqual(check.check_tests(self.patch, 3), 3)
 
+    def test_collection_and_whole_test_result_reused_only_for_same_request(self):
+        check = self.checker()
+        report = {"collection_ok": True, "passed": [self.tests[0]["id"]], "failed": [self.tests[1]["id"]]}
+        with patch.object(check, "run", return_value=report) as run:
+            self.assertTrue(check.validate_selection(self.patch, 3))
+            self.assertEqual(check.check_tests(self.patch, 3), 2)
+            self.assertEqual(run.call_count, 1)
+            run.assert_called_once_with(self.patch, [test["id"] for test in self.tests[:2]], require_imports=True)
+            check.check_tests(self.patch, 3)
+            self.assertEqual(run.call_count, 2)
+
+    def test_no_probe_still_checks_collection_without_running_tests(self):
+        check = self.checker()
+        check.allow_tests = False
+        with patch.object(check, "run", return_value={"collection_ok": True}) as run:
+            self.assertTrue(check.validate_selection(self.patch, 3))
+            run.assert_called_once_with(self.patch)
+
     def test_same_size_same_timestamp_patch_cannot_reuse_baseline_bytecode(self):
         baseline = self.root / "baseline"
         baseline.mkdir()
