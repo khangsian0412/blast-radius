@@ -5,7 +5,7 @@ on:
       kind:
         description: Baseline measurements to rebuild
         type: choice
-        options: [all, coverage, profiles, types, dictionaries, imports, shared]
+        options: [all, coverage, profiles, types, dictionaries, imports, shared, observers]
         default: all
 permissions:
   contents: read
@@ -42,6 +42,11 @@ jobs:
         run: |
           mkdir -p profiles
           docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_shared.py baseline profiles/shared.json
+      - name: Collect source and code observers
+        if: inputs.kind == 'all' || inputs.kind == 'profiles' || inputs.kind == 'observers'
+        run: |
+          mkdir -p profiles
+          docker run --rm --platform linux/amd64 -v "$PWD:/workspace" -w /workspace blast-maps python tools/collect_observers.py baseline profiles/observers.json
       - uses: actions/upload-artifact@v4
         if: inputs.kind == 'all' || inputs.kind == 'coverage'
         with:

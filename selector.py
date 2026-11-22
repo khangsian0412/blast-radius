@@ -748,6 +748,9 @@ class Selector:
             bits = self.dependents(name) or self.all
         return bits
 
+    def source_only_mask(self, name):
+        return self.all
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -787,8 +790,8 @@ class Selector:
                 if ast.dump(before, include_attributes=False) == ast.dump(
                     after, include_attributes=False
                 ):
-                    self.reasons.append("source-only change is not proof of safety: full inventory")
-                    return self.all
+                    result |= self.source_only_mask(name)
+                    continue
                 if self.binding_signatures(before, name) != self.binding_signatures(after, name):
                     return self.all
                 if inserted or not removed:
@@ -892,6 +895,22 @@ class Selector:
         return result | (self.always if result else 0)
 
 
+class OptimizedSelector(Selector):
+    """Measured reductions, with the confirmed conservative policy as fallback."""
+
+    def source_only_mask(self, name):
+        if not self.map.get("observer_collection") or name in self.map.get("metadata_initialization", ()):
+            return self.all
+        # AST equivalence preserves executable operations, not source or code
+        # locations. Keep every observer and every external-program consumer.
+        # Every other file in a multi-file patch is still analyzed independently.
+        return (
+            union(self.pool[index] for index in self.map.get("metadata_observers", {}).values())
+            | self.pool[self.map.get("observer_children", 0)]
+            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+        )
+
+
 def schedule(tests: list[dict]) -> list[list[int]]:
     """Choose LPT's best worker count under the exact integer-ms cost model."""
     if not tests:
@@ -922,7 +941,7 @@ def main():
     parser.add_argument("--map", type=Path, default=HERE / "maps/coverage.json")
     parser.add_argument("--no-probe", action="store_true")
     parser.add_argument(
-        "--selection", choices=("conservative", "precise", "complete"),
+        "--selection", choices=("conservative", "optimized", "precise", "complete"),
         default="conservative",
         help="conservative is accuracy-first; complete selects every provided test",
     )
@@ -933,7 +952,8 @@ def main():
         for patch in sorted((args.data / "commits").glob("*.patch")):
             print(json.dumps({"commit": patch.stem, "workers": workers}, separators=(",", ":")), flush=True)
         return
-    selector = Selector(tests, args.map, args.source)
+    cls = OptimizedSelector if args.selection == "optimized" else Selector
+    selector = cls(tests, args.map, args.source)
     from verification import Verifier
 
     verifier = Verifier(selector) if args.selection == "precise" and not args.no_probe else None
@@ -946,7 +966,7 @@ def main():
             continue
         selected = (
             selector.select_conservative(content)
-            if args.selection == "conservative" else selector.select(content)
+            if args.selection in {"conservative", "optimized"} else selector.select(content)
         )
         if verifier:
             selected = verifier.check(content, selected)
