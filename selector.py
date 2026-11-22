@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 from dataclasses import dataclass, field
 import json
 import math
+import marshal
 import operator
 from pathlib import Path, PurePosixPath
 import re
@@ -751,6 +753,18 @@ class Selector:
     def source_only_mask(self, name):
         return self.all
 
+    def body_mask(self, name, owner, line, before, after):
+        return (
+            self.range_mask(name, owner.lineno, owner.end_lineno)
+            if self.map.get("shared_collection") else self.dependents(name)
+        )
+
+    def observers(self, name):
+        return 0
+
+    def code_observers(self, name, before, after):
+        return 0
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -792,6 +806,7 @@ class Selector:
                 ):
                     result |= self.source_only_mask(name)
                     continue
+                result |= self.code_observers(name, before, after)
                 if self.binding_signatures(before, name) != self.binding_signatures(after, name):
                     return self.all
                 if inserted or not removed:
@@ -847,10 +862,7 @@ class Selector:
                         for node in functions for decorator in getattr(node, "decorator_list", ())
                     ):
                         return self.all
-                    function_users = (
-                        self.range_mask(name, owner.lineno, owner.end_lineno)
-                        if self.map.get("shared_collection") else self.dependents(name)
-                    )
+                    function_users = self.body_mask(name, owner, line, before, after)
                     if not function_users:
                         return self.all
                     affected |= function_users
@@ -905,9 +917,72 @@ class OptimizedSelector(Selector):
         # locations. Keep every observer and every external-program consumer.
         # Every other file in a multi-file patch is still analyzed independently.
         return (
+            self.observers(name)
+            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+        )
+
+    def observers(self, name):
+        return (
             self.pool[self.map.get("metadata_observers", {}).get(name, 0)]
             | self.pool[self.map.get("observer_children", 0)]
-            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+        )
+
+    def body_mask(self, name, owner, line, before, after):
+        whole = super().body_mask(name, owner, line, before, after)
+        if not self.map.get("metadata_sites_complete") or not self.map.get("shared_collection"):
+            return whole
+
+        class Statements(ast.NodeTransformer):
+            def visit(self, node):
+                # Preserve statement/scope structure; only expression contents
+                # may differ when using an expression-entry dependency.
+                if isinstance(node, ast.expr):
+                    return ast.Constant(value=None)
+                return super().visit(node)
+
+        if ast.dump(Statements().visit(copy.deepcopy(before))) != ast.dump(Statements().visit(copy.deepcopy(after))):
+            return whole
+        candidates = [
+            node for node in ast.walk(owner)
+            if isinstance(node, ast.stmt) and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.lineno <= line <= node.end_lineno
+        ]
+        if not candidates:
+            return whole
+        statement = min(candidates, key=lambda node: node.end_lineno - node.lineno)
+        entries = {line, statement.lineno}
+        # A changed late operand may start executing when an earlier operand
+        # short-circuits differently. Retain the entry of every enclosing
+        # expression, not only the changed physical line.
+        entries.update(
+            node.lineno for node in ast.walk(owner)
+            if isinstance(node, ast.expr) and node.lineno <= line <= node.end_lineno
+        )
+        direct = union(self.lines(name).get(entry, 0) for entry in entries)
+        return direct or whole
+
+    def code_observers(self, name, before, after):
+        if not self.map.get("metadata_sites_complete"):
+            return self.observers(name)
+        changed = set()
+        pending = [(compile(before, name, "exec", dont_inherit=True), compile(after, name, "exec", dont_inherit=True))]
+        while pending:
+            old, new = pending.pop()
+            # Compare every serialized code field, including locations, nested
+            # code constants and exception tables. Observing a parent code
+            # object can expose a changed child through co_consts.
+            if marshal.dumps(old) != marshal.dumps(new):
+                changed.add(f"{name}:{old.co_firstlineno}")
+            old_children = [v for v in old.co_consts if isinstance(v, types.CodeType)]
+            new_children = [v for v in new.co_consts if isinstance(v, types.CodeType)]
+            if len(old_children) != len(new_children):
+                return self.observers(name)
+            pending.extend(zip(old_children, new_children))
+        if changed.intersection(self.map.get("metadata_initialization_sites", ())):
+            return self.all
+        return (
+            union(self.pool[self.map.get("metadata_sites", {}).get(site, 0)] for site in changed)
+            | self.pool[self.map.get("observer_children", 0)]
         )
 
 

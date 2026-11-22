@@ -45,6 +45,33 @@ class ObserverTests(unittest.TestCase):
         selector = self.optimized()
         self.assertEqual(selector.select_conservative(diff(self.source, changed)), 6)
 
+    def branching_body(self):
+        self.source = "def f(x):\n    if x:\n        return 1\n    return 2\n"
+        self.data["files"][self.name]["lines"] = {"3": 1, "4": 2}
+        self.data["metadata_sites_complete"] = True
+        return self.optimized()
+
+    def test_body_replacement_keeps_entry_context_and_cached_code_readers(self):
+        selector = self.branching_body()
+        self.data["metadata_sites"] = {self.name + ":1": 2}
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 7)
+
+    def test_unrelated_branch_is_not_a_dependency_of_return_expression(self):
+        selector = self.branching_body()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 5)
+
+    def test_cached_collection_time_code_read_keeps_every_test(self):
+        selector = self.branching_body()
+        self.data["metadata_initialization_sites"] = [self.name + ":1"]
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 15)
+
+    def test_short_circuit_change_keeps_the_whole_condition_entry(self):
+        self.source = "def f(a, b):\n    if (a\n        and b):\n        return 1\n    return 0\n"
+        self.data["files"][self.name]["lines"] = {"2": 1, "3": 2, "4": 2}
+        self.data["metadata_sites_complete"] = True
+        selector = self.optimized()
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("and b", "or b"))), 7)
+
 
 if __name__ == "__main__":
     unittest.main()
