@@ -3,6 +3,7 @@
 from __future__ import annotations
 import concurrent.futures
 import enum
+import hashlib
 import inspect
 import json
 import math
@@ -24,6 +25,7 @@ def main():
     keys = {}
     type_objects = {}
     value_profiles = {}
+    canonical_enums = {}
 
     def record(site, side, cls):
         identity = id(cls)
@@ -75,6 +77,11 @@ def main():
         )
 
     def record_value(site, side, value):
+        entry = canonical_enums.setdefault(site, [True, True])
+        if isinstance(value, enum.Enum):
+            entry[side] &= any(value is member for member in vars(type(value)).get("_member_map_", {}).values())
+        else:
+            entry[side] = False
         profile = value_profiles.setdefault(
             site,
             [{"values": set(), "unknown": False}, {"values": set(), "unknown": False}],
@@ -136,6 +143,8 @@ def main():
                     for site, (a, b) in sorted(profiles.items())
                 },
                 "types": types,
+                "canonical_enum_profiles": canonical_enums,
+                "type_collection": {"python": sys.version.split()[0], "platform": sys.platform, "exit_code": int(result), "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
                 "value_profiles": {
                     site: [
                         {"values": sorted(part["values"]), "unknown": part["unknown"]}
