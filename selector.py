@@ -910,6 +910,91 @@ class Selector:
 class OptimizedSelector(Selector):
     """Measured reductions, with the confirmed conservative policy as fallback."""
 
+    import_validator = None
+
+    def select_conservative(self, patch):
+        self.reasons = []
+        try:
+            planned = self.configuration_plan(patch)
+        except (OSError, UnicodeError, ValueError, SyntaxError, TypeError, IndexError, RecursionError):
+            planned = None
+        if planned is not None and planned != self.all:
+            if self.import_validator is not None and self.import_validator(patch):
+                self.reasons.append("literal setting: class users and cached dependencies; patched collection passed")
+                return planned
+            return self.all
+        return super().select_conservative(patch)
+
+    def configuration_plan(self, patch):
+        if not all(self.map.get(key) for key in ("metadata_sites_complete", "shared_collection", "attribute_dependencies_complete")):
+            return None
+        changes = parse_patch(patch)
+        if len(changes) != 1:
+            return None
+        change = changes[0]
+        name = change.old
+        if name != change.new or not name or not name.startswith("sqlglot/") or not name.endswith(".py"):
+            return None
+        before = self.tree(name)
+        new, _, _ = apply_change(self.read(name), change)
+        after = ast.parse(new, type_comments=True)
+
+        def assignments(tree):
+            result = {}
+            def walk(body, parents):
+                for index, node in enumerate(body):
+                    if isinstance(node, ast.ClassDef):
+                        walk(node.body, parents + (node.name,))
+                    elif parents and isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                        result[parents, index] = node
+            walk(tree.body, ())
+            return result
+
+        left, right = assignments(before), assignments(after)
+        if left.keys() != right.keys():
+            return None
+        differences = [key for key in left if ast.dump(left[key]) != ast.dump(right[key])]
+        if len(differences) != 1:
+            return None
+        location = differences[0]
+        old_statement, new_statement = left[location], right[location]
+        targets = old_statement.targets if isinstance(old_statement, ast.Assign) else [old_statement.target]
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name) or targets[0].id.startswith("__"):
+            return None
+        old_value, new_value = ast.literal_eval(old_statement.value), ast.literal_eval(new_statement.value)
+
+        def same_shape(a, b):
+            if type(a) is not type(b):
+                return False
+            if type(a) is dict:
+                return list(a) == list(b) and all(same_shape(a[key], b[key]) for key in a)
+            if type(a) in (list, tuple):
+                return len(a) == len(b) and all(same_shape(x, y) for x, y in zip(a, b))
+            return type(a) in (str, bool, int, float, type(None))
+
+        if not same_shape(old_value, new_value):
+            return None
+        replacement = new_statement.value
+        new_statement.value = old_statement.value
+        unchanged_elsewhere = ast.dump(before) == ast.dump(after)
+        new_statement.value = replacement
+        if not unchanged_elsewhere:
+            return None
+        module = name.removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+        owner = module + "." + ".".join(location[0])
+        field = owner + "." + targets[0].id
+        classes = self.map.get("classes", {})
+        if owner not in classes:
+            return None
+        dependencies = self.class_dependency_mask(owner, [field])
+        dependencies |= self.pool[classes[owner]] | self.pool[self.map.get("attributes", {}).get(field, 0)]
+        if not dependencies:
+            return None
+        return (
+            dependencies | self.unknown | self.always | self.code_observers(name, before, after)
+            | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
+        )
+
     def source_only_mask(self, name):
         if not self.map.get("observer_collection") or name in self.map.get("metadata_initialization", ()):
             return self.all
@@ -1029,6 +1114,9 @@ def main():
         return
     cls = OptimizedSelector if args.selection == "optimized" else Selector
     selector = cls(tests, args.map, args.source)
+    if args.selection == "optimized":
+        from collection_check import CollectionCheck
+        selector.import_validator = CollectionCheck(selector)
     from verification import Verifier
 
     verifier = Verifier(selector) if args.selection == "precise" and not args.no_probe else None

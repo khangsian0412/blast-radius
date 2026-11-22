@@ -7,4 +7,5 @@
 !tools/fetch_baseline.py
 !verification.py
 !probe.py
+!collection_check.py
 !tools/requirements.lock

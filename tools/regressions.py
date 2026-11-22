@@ -7,7 +7,8 @@ import subprocess
 SCRIPT = r"""
 import ast, difflib, json, pathlib, subprocess, sys, tempfile
 sys.path.insert(0, '/app')
-from selector import Selector
+from selector import Selector, OptimizedSelector
+from collection_check import CollectionCheck
 from verification import Verifier
 root=pathlib.Path('/opt/sqlglot')
 tests=json.loads(pathlib.Path('/data/tests.json').read_text())['tests']
@@ -25,6 +26,10 @@ modified=source[:start]+'True'+source[end:]
 patch=''.join(difflib.unified_diff(source.splitlines(True),modified.splitlines(True),'a/'+name,'b/'+name))
 before=selector.select_conservative(patch)
 assert before == selector.all, 'import-sensitive edits must keep the complete inventory'
+optimized=OptimizedSelector(tests,pathlib.Path('/app/maps/coverage.json'),root)
+optimized.import_validator=CollectionCheck(optimized)
+assert not optimized.import_validator(patch), 'real-file collection must detect the changed import failure'
+assert optimized.select_conservative(patch)==optimized.all, 'failed collection must disable the setting reduction'
 verifier=Verifier(selector)
 after=verifier.check(patch,before)
 report=verifier.last_report

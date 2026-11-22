@@ -72,6 +72,36 @@ class ObserverTests(unittest.TestCase):
         selector = self.optimized()
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("and b", "or b"))), 7)
 
+    def configured(self):
+        self.source = "class Example:\n    VALUE = 1\n"
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data.update(
+            metadata_sites_complete=True, attribute_dependencies_complete=True,
+            classes={"sqlglot.example.Example": 2},
+            attributes={"sqlglot.example.Example.VALUE": 1},
+        )
+        return self.optimized()
+
+    def test_literal_setting_needs_a_completed_collection_check(self):
+        selector = self.configured()
+        patch = diff(self.source, self.source.replace("VALUE = 1", "VALUE = 2"))
+        self.assertEqual(selector.select_conservative(patch), 15)
+        selector.import_validator = lambda patch: False
+        self.assertEqual(selector.select_conservative(patch), 15)
+        selector.import_validator = lambda patch: True
+        self.assertEqual(selector.select_conservative(patch), 7)
+
+    def test_setting_reduction_cannot_hide_a_second_code_change(self):
+        selector = self.configured()
+        selector.import_validator = lambda patch: True
+        changed = self.source.replace("VALUE = 1", "VALUE = 2") + "OTHER = 2\n"
+        self.assertEqual(selector.select_conservative(diff(self.source, changed)), 15)
+
+    def test_new_setting_type_keeps_every_test(self):
+        selector = self.configured()
+        selector.import_validator = lambda patch: True
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("VALUE = 1", "VALUE = 'two'"))), 15)
+
 
 if __name__ == "__main__":
     unittest.main()
