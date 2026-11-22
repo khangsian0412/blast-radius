@@ -218,6 +218,16 @@ class ObserverTests(unittest.TestCase):
         self.data.update(scalar_collection={"baseline": True}, scalar_fields=["sqlglot.example.Example.VALUE"], scalar_reads={"sqlglot.example.Example.VALUE": 1}, scalar_initialization=["sqlglot.example.Example.VALUE"])
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("VALUE = 1", "VALUE = 2"))), 15)
 
+    def test_source_snapshot_captured_during_collection_keeps_every_test(self):
+        selector = self.branching_body()
+        self.data.update(source_observation_complete=True, source_observers={}, source_initialization=[self.name])
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 15)
+
+    def test_import_only_reads_do_not_replace_genuine_source_observers(self):
+        selector = self.branching_body()
+        self.data.update(source_observation_complete=True, source_observers={self.name: 3}, source_reads={self.name: 2})
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("return 1", "return 3"))), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

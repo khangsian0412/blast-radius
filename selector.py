@@ -798,6 +798,7 @@ class Selector:
         No patched-test probe is allowed to remove this selection.
         """
         self.reasons = []
+        self.execution_changed = False
         readers = self.source_readers()
         result = self.unknown | self.always | readers
         try:
@@ -805,6 +806,7 @@ class Selector:
                 name = change.old
                 result |= self.source_readers(name)
                 if name == change.new and name in self.map["fixtures"]:
+                    self.execution_changed = True
                     if not self.map.get("shared_collection"):
                         return self.all
                     fixture_readers = self.pool[self.map["fixtures"][name]]
@@ -895,6 +897,7 @@ class Selector:
                     if not function_users and not self._unexecuted_entry:
                         return self.all
                     proved_unexecuted |= self._unexecuted_entry
+                    self.execution_changed |= bool(function_users)
                     affected |= function_users
                 if not affected and not proved_unexecuted:
                     return self.all
@@ -945,7 +948,10 @@ class OptimizedSelector(Selector):
     def source_readers(self, name=None):
         if not self.map.get("metadata_sites_complete"):
             return super().source_readers(name)
-        return self.pool[self.map.get("source_reads", {}).get(name, 0)] if name is not None else 0
+        if name in self.map.get("source_initialization", ()):
+            return self.all
+        table = "source_observers" if self.map.get("source_observation_complete") else "source_reads"
+        return self.pool[self.map.get(table, {}).get(name, 0)] if name is not None else 0
 
     def finish_selection(self, result):
         return result if self.map.get("metadata_sites_complete") else super().finish_selection(result)
@@ -1054,6 +1060,7 @@ class OptimizedSelector(Selector):
         self.reasons = []
         self.unread_setting = False
         self.scalar_setting = False
+        self.execution_changed = False
         try:
             planned = self.configuration_plan(patch)
         except (OSError, UnicodeError, ValueError, SyntaxError, TypeError, IndexError, RecursionError):
@@ -1136,11 +1143,13 @@ class OptimizedSelector(Selector):
             if type(previous_value) is type(replacement_value) and type(previous_value) in (str, bool, int, float, type(None)):
                 self.scalar_setting = True
                 readers = self.pool[self.map.get("scalar_reads", {}).get(field, 0)] | self.pool[self.map.get("attributes", {}).get(field, 0)]
+                self.execution_changed = bool(readers)
                 return readers | self.unknown | self.always | self.code_observers(name, before, after) | self.source_readers(name)
         dependencies = self.class_dependency_mask(owner, [field])
         dependencies |= self.pool[classes[owner]] | self.pool[self.map.get("attributes", {}).get(field, 0)]
         if not dependencies:
             return None
+        self.execution_changed = True
         return (
             dependencies | self.unknown | self.always | self.code_observers(name, before, after)
             | self.source_readers(name)

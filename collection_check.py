@@ -62,6 +62,8 @@ class CollectionCheck:
         targets = [self.selector.tests[i] for i in iter_bits(selected)]
         if not targets or len(targets) > 50 or sum(test["seconds"] for test in targets) > 1.0:
             return selected
+        if len(targets) == 1 and getattr(self.selector, "execution_changed", True):
+            return selected
         # Resource-reader tests often launch a large worker pool. Their recorded
         # duration omits the cold verification startup, so keep them directly.
         try:
@@ -70,7 +72,7 @@ class CollectionCheck:
         except ValueError:
             return selected
         names = {test["id"] for test in targets}
-        if sum(item["test"] in names for item in self.selector.map.get("task_ids", ())) > 150:
+        if any(item["test"] in names for item in self.selector.map.get("task_ids", ())):
             return selected
         report = self.run(patch, [test["id"] for test in targets])
         if not isinstance(report, dict) or report.get("collection_ok") is not True:

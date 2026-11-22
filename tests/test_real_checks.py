@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import py_compile
 import subprocess
@@ -52,6 +53,25 @@ class RealCheckTests(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", "-c", "import example; print(example.value)"], cwd=destination, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.strip(), "2")
         self.assertEqual(cached.read_bytes(), original_cache)
+
+    def test_loader_source_inspection_is_distinct_from_loading_code(self):
+        source = self.root / "observed.py"
+        source.write_text("value = 1\n")
+        script = '''import importlib.machinery, json, os, sys
+from tools.collect_observers import import_read
+source = sys.argv[1]
+events = []
+def audit(event, values):
+    if event == "open" and values[0] == source:
+        events.append(import_read())
+sys.addaudithook(audit)
+loader = importlib.machinery.SourceFileLoader("observed", source)
+loader.get_code("observed")
+loader.get_source("observed")
+print(json.dumps(events))
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(source)], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [True, False])
 
 
 if __name__ == "__main__":
