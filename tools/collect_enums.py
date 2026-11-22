@@ -26,9 +26,13 @@ def main():
 
     def record(site, side, value):
         flags = members.setdefault(site, [True, True])
+        namespace = vars(value) if isinstance(value, enum.Enum) else {}
+        name = namespace.get("_name_")
+        registry = vars(type(value)).get("_member_map_", {})
         flags[side] &= (
             isinstance(value, enum.Enum)
-            and any(value is member for member in vars(type(value)).get("_member_map_", {}).values())
+            and type(name) is str and type(registry) is dict
+            and dict.get(registry, name) is value
         )
 
     install(root, lambda obj: None, lambda obj, name: None, record_value=record, sites=sites, only_operands=True)

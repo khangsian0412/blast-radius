@@ -79,7 +79,9 @@ def main():
     def record_value(site, side, value):
         entry = canonical_enums.setdefault(site, [True, True])
         if isinstance(value, enum.Enum):
-            entry[side] &= any(value is member for member in vars(type(value)).get("_member_map_", {}).values())
+            name = vars(value).get("_name_")
+            registry = vars(type(value)).get("_member_map_", {})
+            entry[side] &= type(name) is str and type(registry) is dict and dict.get(registry, name) is value
         else:
             entry[side] = False
         profile = value_profiles.setdefault(
