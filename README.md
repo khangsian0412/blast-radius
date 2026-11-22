@@ -1,28 +1,31 @@
 # Blast Radius
 
-A test-selection submission for the [Blast Radius buildathon](https://www.joinbuilders.org/buildathon/tracks/blast-radius), targeting sqlglot commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`.
+A test-selection submission for the [Blast Radius buildathon](https://www.joinbuilders.org/buildathon/tracks/blast-radius), targeting SQLGlot commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`.
 
-The repository-root Dockerfile is the submission entry point. It runs without a network, as nobody, with a read-only filesystem. Output is one JSON line per patch; diagnostics go to stderr.
+The repository-root Dockerfile is the entry point. It runs offline, as nobody, with a read-only filesystem, and writes one JSON line per independent patch. Diagnostics go to stderr.
 
 ## Selection
 
-The committed plain-JSON map contains measurements from the unmodified baseline: per-test and per-task coverage, class and attribute usage, subprocess coverage, initializer dependencies, operand types and bounded primitive values. It contains no patch IDs, mutation outcomes, or failing-test labels.
+The default `optimized` policy combines baseline dependency measurements with guarded source analysis. The plain JSON map records coverage, shared fixtures, class and attribute consumers, operand types, source/code observers, subprocesses and initialization dependencies. It contains no patch identities, mutation outcomes or failing-test labels.
 
-The default selection policy prioritizes avoiding omissions. It reconstructs each independent patch and keeps the entire changed function's baseline coverage for ordinary body replacements. All baseline source-reading tests are retained as well, because inspecting a function or cached metadata need not execute its edited body. It does not narrow to only the edited statement.
+Ordinary body changes retain whole-function coverage unless statement structure, bindings and initialization checks permit using the entry coverage of the changed statement and its enclosing expressions. Primitive-expression equivalence requires measured builtin types and bounded operands; enum comparisons also require canonical members. Unknown or incomplete evidence keeps broader coverage.
 
-Source-file reads are recorded separately from execution coverage. A test that reads a module's source can inspect metadata from an already cached import without executing the changed statement. These dependencies are always retained, including for AST-equivalent edits, and cannot be cleared by probes whose virtual loader leaves the original files on disk.
+Source inspection is recorded separately from ordinary imports. Genuine source readers, cached source snapshots, code-object observers and unverified child programs remain dependencies, including for comment-only changes. Import-time execution, changed compiler diagnostics, unsupported definitions, new bindings and incomplete patch parsing retain the full inventory. Every file section is analyzed.
 
-Known fixtures retain every recorded reader, including all members of a class whose setup loads that fixture. A separate baseline pass records shared pytest fixture setup and finalizers in their actual class/module/session scope; this corrects dependencies previously attributed only to the first consuming test. The same expansion applies to function coverage, class users and attribute users. Without these scope measurements, whole-function and fixture reductions stay disabled. Unknown or empty fixture mappings keep the full inventory. All class settings, dictionaries, expressions, changed annotations and special attributes stay broad at this checkpoint.
+Shared setup and finalizers expand dependencies to all consuming tests. Class settings retain measured consumers and normally require successful imports and full collection against real patched files. Narrower exceptions cover certified scalar readers and existing immutable dictionary values with **zero** baseline reads; dictionaries are never narrowed to individual key readers. Closure-factory handling permits only literal argument changes to factories whose only work is returning an undecorated closure.
 
-Lambda definitions and calls can share a source line. Separate callable-entry measurements from baseline collection/imports distinguish them; callbacks actually invoked during initialization, and callbacks without complete call measurements, keep the full inventory.
+Small selections can undergo complete runtime test checks. Tests are removed only after successful collection, a passing root call and successful teardown. Failed native subtests remain failures; uncertain, skipped, timed-out or unexecuted tests remain selected. Checks never skip subtests or alter multiprocessing behavior. Resource patches and tests with baseline pool tasks bypass these checks.
 
-The full provided test inventory is selected for source-only/AST-equivalent edits, unknown resources, definitions, import-sensitive configuration, import-time execution, new bindings, inserted code, incomplete patch parsing and missing coverage. This preserves the organizers' warning that a comment-only change is not promised to be harmless. Every git file section must be accounted for; duplicate file sections and unsupported file-mode/copy changes are treated as uncertainty.
+Each check imports application code from a fresh physical patched directory. Unchanged baseline bytecode is reusable, but every edited module's caches are excluded. On Linux, external dependency imports are shared through a parent that never imports SQLGlot or tests; each request gets a fresh child. CPU accounting includes descendants, checks have deadlines and budgets, and failures retain tests.
 
-The default does **not** remove tests based on observed operand values, supposedly unread dictionary values, or passing runtime probes. These analyses from the earlier submission remain available only through `--selection precise` for research and comparison; they are disabled in the submission's default mode.
+The scheduler tries one through eight workers using the published integer-millisecond cost formula.
 
-`--selection complete` is an independent diagnostic control. It schedules every number in the supplied test inventory for every patch, without reading patch contents or requiring a baseline checkout. Under the published scoring rules this cannot omit a listed failing test, but its simulated cost is substantially higher. It is intended to distinguish selector omissions from a submission or scoring problem.
+Diagnostic modes:
 
-The scheduler tries one through eight workers and minimizes the scoring formula in integer milliseconds. Unknown inventory entries are retained. The full-inventory fallbacks and broader dependencies deliberately trade simulated speed for recall; a zero-miss result on the hidden set still requires a new practice run.
+- `--selection conservative`: broader whole-function/source-reader selection.
+- `--selection complete`: every supplied test for every patch.
+- `--no-probe`: disable passing-test checks; required collection guards remain.
+- `--selection precise`: legacy research mode, not the submission default.
 
 ## Verification
 
@@ -34,44 +37,24 @@ python3 tools/regressions.py
 python3 tools/benchmark.py
 ```
 
-Docker and Python are required. `make sample` builds `linux/amd64` and uses the scorer's no-network, read-only, nobody-user, 2-CPU, 4-GB, 256-process and 64-MB-temporary-storage restrictions.
+Docker and Python are required. Containers use the scorer's 2-CPU, 4-GB, read-only, offline, nobody-user, 256-process and 64-MB temporary-storage limits. The verification workflow requires zero sample misses, exercises import failures, cached callbacks, source readers, shared fixtures, failed subtests and isolation between requests, then measures three runs. See [validation notes](VALIDATION.md) for results and limits.
 
-The verification workflow requires valid output with zero sample misses, checks whole-file import failures, failed subtests, metadata and callback regressions, shared fixture readers and comment-only coverage, and measures three runs. The official score uses the median total.
+## Rebuild measurements
 
-The confirmed zero-miss submission is preserved on `checkpoint/zero-miss-e2f23d8`. The first optimization checkpoint restores known-fixture readers and whole-function coverage. It keeps comment-only and import-time fallbacks and leaves passing-test probes disabled. Local independent audits also ran 5,801 omitted tests against actual patched source/data with no failures; hidden correctness must be confirmed by another scored run before further narrowing.
+The **Rebuild baseline coverage** workflow supports coverage, type/value, dictionary, import, shared-fixture, observer, enum and reflective-scalar passes. Each collector rejects failed baseline runs. [Provenance](maps/provenance.json) records the source pin and collection environments. Source archives are checksum-verified and integration tests are enabled. Raw profiling scratch files are excluded from the image.
 
-The sample kit has 30 patches. The starter's simulated cost on this same set is **1,210.470 seconds**. Latest measured results are available in the workflow's `sample-output` artifact. These are sample measurements, not a guarantee about hidden practice or final scores.
-
-## Rebuild baseline maps
-
-The **Rebuild baseline coverage** workflow supports separate coverage, type/value, import, shared fixture and dictionary collection. The Docker image used for collection is the organizer's pinned Python image, with the supplied dependency lock. All collectors reject failed baseline runs.
+For local selection after fetching the pinned baseline and installing `tools/requirements.lock`:
 
 ```sh
 python3 tools/fetch_baseline.py baseline
-python3.13 -m venv .venv
-.venv/bin/python -m pip install -r tools/requirements.lock coverage==7.13.5
-.venv/bin/python tools/collect.py baseline maps/coverage.json
-.venv/bin/python tools/collect_types.py baseline profiles/types.json
-.venv/bin/python tools/collect_imports.py baseline profiles/imports.json
-.venv/bin/python tools/collect_children.py baseline profiles/children.json
-.venv/bin/python tools/collect_dicts.py baseline profiles/dicts.json
-.venv/bin/python tools/collect_shared.py baseline profiles/shared.json
-.venv/bin/python tools/merge_maps.py maps/coverage.json profiles/types.json profiles/imports.json profiles/children.json profiles/dicts.json profiles/shared.json
-```
-
-Create `profiles/` before running these local commands. [Provenance](maps/provenance.json) records the source pin and collection environments. The source archive is checksum-verified. Integration tests are enabled during collection. Raw coverage databases and profiling scratch files are not included in the submission image.
-
-To run selection locally, use the same Python environment:
-
-```sh
-.venv/bin/python selector.py --source baseline --data sample > output.jsonl
-.venv/bin/python tools/score.py sample sample/answers.json output.jsonl
+python3 selector.py --source baseline --data sample > output.jsonl
+python3 tools/validate.py sample output.jsonl --require-no-misses
 ```
 
 ## Submit
 
-Use the public repository URL and the full commit SHA of a passing **Verify submission** run. No API key, hosted service or separate release is required.
+Use the public repository URL and full commit SHA of a passing **Verify submission** run. No hosted service, API key or separate release is required. The user-confirmed zero-miss version is preserved on `checkpoint/zero-miss-700-37e9b6b`.
 
-Hidden runs reveal a miss count, not the failing tests. The independent regression audit found and repaired import-time and cached-callback gaps, but only a new practice run can establish the hidden score. The approach is conservative impact analysis, not a proof of global optimality for arbitrary programs.
+Sample validation cannot establish hidden recall or hidden execution time: a scored practice run is still required. This is measured impact analysis, not a proof that arbitrary programs cannot have unseen dependencies.
 
-The sample data, scorer, scoring rules and dependency lock come from the organizers. SQLGlot is fetched from its pinned upstream repository and retains its upstream license. `sample/answers.json` is used only for offline evaluation and is excluded from the Docker build context.
+The sample data, scoring rules and dependency lock are supplied by the organizers. SQLGlot is fetched from pinned upstream source and retains its upstream license. Sample answers are used only for offline evaluation and are excluded from the Docker build context.
