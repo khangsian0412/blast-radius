@@ -32,6 +32,7 @@ def main():
     metadata, initialization, source_reads = {}, set(), {}
     metadata_sites, initialization_sites = {}, set()
     children = set()
+    expected_children, child_starts = {}, {}
     failures = []
     prefix = str(root) + "/"
     parent_pid = os.getpid()
@@ -96,6 +97,7 @@ def main():
                 record(source_reads, name[len(prefix):])
         elif event == "subprocess.Popen" and active[0] is not None:
             children.add(active[0])
+            expected_children[active[0]] = expected_children.get(active[0], 0) + 1
 
     sys.addaudithook(audit)
 
@@ -161,6 +163,9 @@ def main():
             kind, name, tag = json.loads(line)
             if tag not in scopes:
                 raise SystemExit("Child observer lost its pytest scope")
+            if kind == "start":
+                child_starts.setdefault(tag, set()).add(name)
+                continue
             table = metadata_sites if kind == "code" else metadata if kind == "metadata" else source_reads
             table.setdefault(name, set()).add(tag)
 
@@ -175,6 +180,7 @@ def main():
         "metadata_sites_complete": True,
         "observer_source_reads": {name: members(tags) for name, tags in sorted(source_reads.items())},
         "observer_children": members(children),
+        "verified_observer_children": members(tag for tag, expected in expected_children.items() if len(child_starts.get(tag, ())) == expected),
         "observer_collection": {"python": sys.version.split()[0], "platform": sys.platform, "tests": len(scopes["@session"]), "collector_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -230,6 +236,8 @@ def child_hook():
             busy[0] = False
 
     sys.addaudithook(audit)
+    with (Path(output) / f"{os.getpid()}.jsonl").open("a") as stream:
+        stream.write(json.dumps(("start", str(os.getpid()), tag)) + "\n")
 
 
 def import_read():

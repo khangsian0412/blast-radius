@@ -55,6 +55,8 @@ def main():
                     table[key] = intern(pool[table.get(key, 0)] | bits)
         if "observer_children" in extra:
             extra["observer_children"] = intern(readers(extra["observer_children"]))
+        if "verified_observer_children" in extra:
+            extra["verified_observer_children"] = intern(readers(extra["verified_observer_children"]))
         if "source_reads" in extra:
             data["source_reads"] = {
                 file: intern(sum(1 << test_index[nodeid] for nodeid in set(names) if nodeid in test_index))
