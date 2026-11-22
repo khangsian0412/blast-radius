@@ -86,7 +86,7 @@ def main():
                     record(metadata, name[len(prefix):])
         elif event == "open" and active[0] is not None and isinstance(values[0], str):
             name = os.path.abspath(values[0])
-            if name.startswith(prefix) and name.endswith(".py"):
+            if name.startswith(prefix) and name.endswith(".py") and not import_read():
                 record(source_reads, name[len(prefix):])
         elif event == "subprocess.Popen" and active[0] is not None:
             children.add(active[0])
@@ -190,7 +190,7 @@ def child_hook():
             kind, name = None, None
             if event == "open" and isinstance(values[0], str):
                 name = os.path.abspath(values[0])
-                if name.startswith(root) and name.endswith(".py"):
+                if name.startswith(root) and name.endswith(".py") and not import_read():
                     kind = "source"
             elif event == "object.__getattr__":
                 obj, field = values
@@ -212,6 +212,17 @@ def child_hook():
             busy[0] = False
 
     sys.addaudithook(audit)
+
+
+def import_read():
+    """Loading unchanged executable syntax is distinct from inspecting text."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        code = frame.f_code
+        if code.co_filename == "<frozen importlib._bootstrap_external>" and code.co_name in {"get_code", "get_data"}:
+            return True
+        frame = frame.f_back
+    return False
 
 
 if __name__ == "__main__":
