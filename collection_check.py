@@ -78,6 +78,7 @@ class CheckServer:
 
 
 def server():
+    import gc
     import resource
 
     output = sys.stdout
@@ -94,6 +95,10 @@ def server():
             importlib.import_module(plugin.module)
     if any(name == "sqlglot" or name.startswith(("sqlglot.", "tests.")) or name == "tests" for name in sys.modules):
         raise RuntimeError("check parent imported application code")
+    # Age the shared external dependency graph once. Child collections then
+    # start with empty young generations. Do not freeze objects or disable GC:
+    # heap-inspection and reference-leak tests must retain their normal view.
+    gc.collect()
     print(json.dumps({"ready": True}), file=output, flush=True)
     for line in sys.stdin:
         request = json.loads(line)
