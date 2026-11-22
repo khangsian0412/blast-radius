@@ -102,6 +102,27 @@ class ObserverTests(unittest.TestCase):
         selector.import_validator = lambda patch: True
         self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace("VALUE = 1", "VALUE = 'two'"))), 15)
 
+    def identity_comparison(self):
+        self.source = "def f(a, b):\n    return a is b\n"
+        self.data["files"][self.name]["lines"] = {"2": 1}
+        self.data["metadata_sites_complete"] = True
+        self.data["types"] = {"example.E": {"enum_identity": True}}
+        self.data["type_profiles"] = {self.name + ":2:11": [["example.E"], ["example.E"]]}
+        return self.optimized()
+
+    def test_enum_proof_requires_observed_canonical_members(self):
+        selector = self.identity_comparison()
+        patch = diff(self.source, self.source.replace(" is ", " == "))
+        self.assertEqual(selector.select_conservative(patch), 5)
+        self.data["canonical_enum_profiles"] = {self.name + ":2:11": [True, True]}
+        self.assertEqual(selector.select_conservative(patch), 4)
+
+    def test_proven_comparison_still_keeps_code_observers(self):
+        selector = self.identity_comparison()
+        self.data["canonical_enum_profiles"] = {self.name + ":2:11": [True, True]}
+        self.data["metadata_sites"] = {self.name + ":1": 2}
+        self.assertEqual(selector.select_conservative(diff(self.source, self.source.replace(" is ", " == "))), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

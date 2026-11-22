@@ -356,7 +356,7 @@ class Selector:
                 result |= self.dependents(module)
         return result
 
-    def equivalent(self, name, before, after):
+    def equivalent(self, name, before, after, *, measured=False):
         """Prove identity/equality rewrites from baseline operand type domains.
 
         Stored facts contain only types observed on the unmodified baseline.
@@ -403,6 +403,9 @@ class Selector:
                         "default_equality" if positive else "identity_equality"
                     )
                     enum_key = "enum_identity" if positive else "enum_inequality"
+                    canonical = self.map.get("canonical_enum_profiles", {}).get(
+                        f"{name}:{old.lineno}:{old.col_offset}", [False, False]
+                    )
 
                     def compatible(a, b):
                         left, right = facts.get(a, {}), facts.get(b, {})
@@ -418,7 +421,7 @@ class Selector:
                                 a == b
                                 and (
                                     (left.get("singleton") and right.get("singleton"))
-                                    or (left.get(enum_key) and right.get(enum_key))
+                                    or (left.get(enum_key) and right.get(enum_key) and (not measured or all(canonical)))
                                 )
                             )
                         )
@@ -765,6 +768,9 @@ class Selector:
     def code_observers(self, name, before, after):
         return 0
 
+    def equivalent_body(self, name, before, after):
+        return False
+
     def select_conservative(self, patch: str) -> int:
         """Accuracy-first selection; observed baseline values are not proofs.
 
@@ -807,6 +813,8 @@ class Selector:
                     result |= self.source_only_mask(name)
                     continue
                 result |= self.code_observers(name, before, after)
+                if self.equivalent_body(name, before, after):
+                    continue
                 if self.binding_signatures(before, name) != self.binding_signatures(after, name):
                     return self.all
                 if inserted or not removed:
@@ -911,6 +919,11 @@ class OptimizedSelector(Selector):
     """Measured reductions, with the confirmed conservative policy as fallback."""
 
     import_validator = None
+
+    def equivalent_body(self, name, before, after):
+        if not self.map.get("type_profiles") or not self.map.get("metadata_sites_complete"):
+            return False
+        return self.equivalent(name, before, copy.deepcopy(after), measured=True)
 
     def select_conservative(self, patch):
         self.reasons = []
