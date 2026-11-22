@@ -50,7 +50,8 @@ def attribute_owner(obj, name):
 
 
 def install(
-    root: Path, record_class, record_attribute, record_type=None, record_value=None
+    root: Path, record_class, record_attribute, record_type=None, record_value=None,
+    *, sites=None, only_operands=False,
 ):
     names = declaration_names(root)
     import_stack = []
@@ -83,6 +84,7 @@ def install(
             node = self.generic_visit(node)
             if (
                 (record_type is not None or record_value is not None)
+                and (sites is None or f"{self.filename}:{node.lineno}:{node.col_offset}" in sites)
                 and len(node.ops) == 1
                 and isinstance(
                     node.ops[0],
@@ -116,6 +118,8 @@ def install(
 
         def visit_Attribute(self, node):
             node = self.generic_visit(node)
+            if only_operands:
+                return node
             if isinstance(node.ctx, ast.Load) and node.attr in names:
                 return ast.copy_location(
                     ast.Call(
@@ -130,6 +134,8 @@ def install(
         def visit_Call(self, node):
             # Preserve locally shadowed getattr callables and argument evaluation.
             node = self.generic_visit(node)
+            if only_operands:
+                return node
             if (
                 isinstance(node.func, ast.Name)
                 and node.func.id == "getattr"
@@ -148,6 +154,8 @@ def install(
 
         def visit_FunctionDef(self, node):
             node = self.generic_visit(node)
+            if only_operands:
+                return node
             arguments = [*node.args.posonlyargs, *node.args.args]
             if arguments and arguments[0].arg in {"self", "cls", "klass", "kls"}:
                 position = (
