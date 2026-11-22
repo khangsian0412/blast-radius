@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import types
 
 
@@ -32,10 +33,29 @@ def main():
     children = set()
     failures = []
     prefix = str(root) + "/"
+    parent_pid = os.getpid()
+    child_output = tempfile.TemporaryDirectory(prefix="blast-observers-")
+    hook_dir = Path(child_output.name)
+    (hook_dir / "sitecustomize.py").write_text(
+        "from collect_observers import child_hook\nchild_hook()\n"
+    )
+    os.environ.update(
+        BLAST_OBSERVER_ROOT=str(root), BLAST_OBSERVER_OUTPUT=str(hook_dir),
+        PYTHONPATH=os.pathsep.join([str(hook_dir), str(Path(__file__).resolve().parent), str(root), os.environ.get("PYTHONPATH", "")]),
+    )
+    child_seen = set()
 
     def record(table, name):
         if active[0] is not None:
-            table.setdefault(name, set()).add(active[0])
+            if os.getpid() == parent_pid:
+                table.setdefault(name, set()).add(active[0])
+            else:
+                kind = "metadata" if table is metadata else "source"
+                entry = (kind, name, active[0])
+                if entry not in child_seen:
+                    child_seen.add(entry)
+                    with (hook_dir / f"{os.getpid()}.jsonl").open("a") as stream:
+                        stream.write(json.dumps(entry) + "\n")
 
     observing = [False]
 
@@ -77,10 +97,12 @@ def main():
     def context(tag):
         previous = active[0]
         active[0] = tag
+        os.environ["BLAST_OBSERVER_CONTEXT"] = tag
         try:
             yield
         finally:
             active[0] = previous
+            os.environ["BLAST_OBSERVER_CONTEXT"] = previous or ""
 
     class Plugin:
         def pytest_collection_modifyitems(self, items):
@@ -128,6 +150,12 @@ def main():
     result = pytest.main(["tests", "-q", "--disable-warnings", "-o", "addopts=", "--tb=short", "-p", "no:cacheprovider"], plugins=[Plugin()])
     if result or failures:
         raise SystemExit(f"Observer baseline failed: {result}, {failures}")
+    for file in hook_dir.glob("*.jsonl"):
+        for line in file.read_text().splitlines():
+            kind, name, tag = json.loads(line)
+            if tag not in scopes:
+                raise SystemExit("Child observer lost its pytest scope")
+            (metadata if kind == "metadata" else source_reads).setdefault(name, set()).add(tag)
 
     def members(contexts):
         return sorted({node for tag in contexts for node in scopes.get(tag, ())})
@@ -141,7 +169,49 @@ def main():
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, separators=(",", ":")) + "\n")
+    child_output.cleanup()
     print(json.dumps({"metadata_files": len(metadata), "metadata_initialization": sorted(initialization), "child_tests": len(payload["observer_children"])}))
+
+
+def child_hook():
+    """Observe fresh spawn interpreters without changing pool/task execution."""
+    root = os.environ.get("BLAST_OBSERVER_ROOT", "") + "/"
+    output = os.environ.get("BLAST_OBSERVER_OUTPUT")
+    tag = os.environ.get("BLAST_OBSERVER_CONTEXT")
+    if not output or not tag:
+        return
+    busy, seen = [False], set()
+
+    def audit(event, values):
+        if busy[0]:
+            return
+        busy[0] = True
+        try:
+            kind, name = None, None
+            if event == "open" and isinstance(values[0], str):
+                name = os.path.abspath(values[0])
+                if name.startswith(root) and name.endswith(".py"):
+                    kind = "source"
+            elif event == "object.__getattr__":
+                obj, field = values
+                if field == "__code__" and isinstance(obj, types.FunctionType):
+                    name = obj.__code__.co_filename
+                elif field == "f_code" and isinstance(obj, types.FrameType):
+                    name = obj.f_code.co_filename
+                elif field == "tb_frame" and isinstance(obj, types.TracebackType):
+                    name = obj.tb_frame.f_code.co_filename
+                if name and name.startswith(root + "sqlglot/"):
+                    kind = "metadata"
+            if kind:
+                entry = (kind, name[len(root):], tag)
+                if entry not in seen:
+                    seen.add(entry)
+                    with (Path(output) / f"{os.getpid()}.jsonl").open("a") as stream:
+                        stream.write(json.dumps(entry) + "\n")
+        finally:
+            busy[0] = False
+
+    sys.addaudithook(audit)
 
 
 if __name__ == "__main__":

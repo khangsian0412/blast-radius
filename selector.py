@@ -905,7 +905,7 @@ class OptimizedSelector(Selector):
         # locations. Keep every observer and every external-program consumer.
         # Every other file in a multi-file patch is still analyzed independently.
         return (
-            union(self.pool[index] for index in self.map.get("metadata_observers", {}).values())
+            self.pool[self.map.get("metadata_observers", {}).get(name, 0)]
             | self.pool[self.map.get("observer_children", 0)]
             | union(self.pool[index] for index in self.map.get("source_reads", {}).values())
         )
