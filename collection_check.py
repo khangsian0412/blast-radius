@@ -1,8 +1,4 @@
-"""Check patched collection against real files; never certify passing tests.
-
-Only import/collection success can enable a measured configuration dependency
-reduction. Every error, timeout, or incomplete response keeps the full suite.
-"""
+"""Check real patched files in isolated processes and retain uncertain tests."""
 
 from __future__ import annotations
 
@@ -12,12 +8,111 @@ import json
 import os
 from pathlib import Path
 import signal
+import select
 import subprocess
 import sys
 import tempfile
 import time
 
 from selector import apply_change, iter_bits, parse_patch
+
+
+class CheckServer:
+    """Share external dependency imports, never patched modules or test state.
+
+    Each request forks a fresh child of an untouched parent. SQLGlot and tests
+    are imported only in that child, from its actual patched directory.
+    """
+
+    def __init__(self):
+        self.process = None
+        self.disabled = False
+        self.cpu = 0.0
+
+    def receive(self, timeout):
+        if not select.select([self.process.stdout], [], [], timeout)[0]:
+            raise subprocess.TimeoutExpired("check server", timeout)
+        line = self.process.stdout.readline(100_001)
+        if not line.endswith(b"\n") or len(line) > 100_000:
+            raise ValueError("incomplete check server response")
+        return json.loads(line)
+
+    def run(self, request, timeout):
+        if self.disabled:
+            return None, 0.0
+        try:
+            if self.process is None:
+                self.process = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).resolve()), "--server"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL, start_new_session=True,
+                    cwd=Path(__file__).resolve().parent,
+                    env={**os.environ, "PYTHONPATH": "", "PYTHONDONTWRITEBYTECODE": "1",
+                         "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1"},
+                )
+                if self.receive(timeout) != {"ready": True}:
+                    raise ValueError("check server did not initialize")
+            self.process.stdin.write(json.dumps(request).encode() + b"\n")
+            self.process.stdin.flush()
+            envelope = self.receive(timeout)
+            cpu = envelope["cpu_seconds"]
+            if type(cpu) not in (int, float) or cpu < self.cpu:
+                raise ValueError("invalid check CPU accounting")
+            elapsed, self.cpu = cpu - self.cpu, cpu
+            return envelope["result"], elapsed
+        except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+            self.disabled = True
+            self.close()
+            return None, 0.0
+
+    def close(self):
+        if self.process is not None:
+            process, self.process = self.process, None
+            process.stdin.close()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            process.stdout.close()
+
+
+def server():
+    import resource
+
+    output = sys.stdout
+    with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        for module in ("pytest", "numpy", "pandas", "pandas.testing", "duckdb"):
+            importlib.import_module(module)
+    if any(name == "sqlglot" or name.startswith(("sqlglot.", "tests.")) or name == "tests" for name in sys.modules):
+        raise RuntimeError("check parent imported application code")
+    print(json.dumps({"ready": True}), file=output, flush=True)
+    for line in sys.stdin:
+        request = json.loads(line)
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read_fd)
+            try:
+                # Native libraries and spawned programs must not write to the
+                # server protocol. The report has its own close-on-exec pipe.
+                with open(os.devnull, "wb") as sink:
+                    os.dup2(sink.fileno(), 1)
+                    os.dup2(sink.fileno(), 2)
+                os.environ.update(PYTHONPATH=request["source"], TMPDIR=request["temporary"])
+                tempfile.tempdir = None
+                with os.fdopen(write_fd, "w") as result:
+                    worker(request, result)
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        with os.fdopen(read_fd, "rb") as result:
+            payload = result.read(100_001)
+        _, status = os.waitpid(pid, 0)
+        report = json.loads(payload) if status == 0 and len(payload) <= 100_000 else None
+        own, children = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu = own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+        print(json.dumps({"result": report, "cpu_seconds": cpu}), file=output, flush=True)
 
 
 def overlay(source, destination, changes, prefix=""):
@@ -49,11 +144,12 @@ def overlay(source, destination, changes, prefix=""):
 
 
 class CollectionCheck:
-    def __init__(self, selector, budget=20):
+    def __init__(self, selector, budget=20, backend=None):
         self.selector = selector
         self.used = 0.0
         self.budget = budget
         self.deadline = time.monotonic() + 120
+        self.backend = backend
 
     def __call__(self, patch):
         return self.run(patch) == {"collection_ok": True}
@@ -107,6 +203,11 @@ class CollectionCheck:
                 request = {"source": str(root), "modules": [name.removesuffix(".py").replace("/", ".").removesuffix(".__init__") for name in changes if name.endswith(".py")]}
                 if tests is not None:
                     request["tests"] = tests
+                if self.backend is not None:
+                    request["temporary"] = directory
+                    report, cpu = self.backend.run(request, min(8, max(0.1, self.deadline - time.monotonic())))
+                    self.used += cpu
+                    return report
                 process = subprocess.Popen(
                     [sys.executable, str(Path(__file__).resolve()), "--worker"],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -127,12 +228,12 @@ class CollectionCheck:
             self.used += time.process_time() - started + following.ru_utime + following.ru_stime - previous.ru_utime - previous.ru_stime
 
 
-def worker():
-    request = json.load(sys.stdin)
+def worker(request=None, output=None):
+    request = json.load(sys.stdin) if request is None else request
     root = Path(request["source"]).resolve()
     os.chdir(root)
     sys.path.insert(0, str(root))
-    output = sys.stdout
+    output = sys.stdout if output is None else output
     failures = []
     failed, call_passed, completed = set(), set(), set()
     unsafe = [False]
@@ -179,4 +280,4 @@ def worker():
 
 
 if __name__ == "__main__":
-    worker()
+    server() if "--server" in sys.argv else worker()

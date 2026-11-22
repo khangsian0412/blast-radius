@@ -8,7 +8,7 @@ SCRIPT = r"""
 import ast, difflib, json, pathlib, subprocess, sys, tempfile
 sys.path.insert(0, '/app')
 from selector import Selector, OptimizedSelector
-from collection_check import CollectionCheck
+from collection_check import CheckServer, CollectionCheck
 from verification import Verifier
 root=pathlib.Path('/opt/sqlglot')
 tests=json.loads(pathlib.Path('/data/tests.json').read_text())['tests']
@@ -125,6 +125,22 @@ node_a=test_file+'::TestWholeProbe::test_a_source'
 node_b=test_file+'::TestWholeProbe::test_b_subtest'
 whole=CollectionCheck(selector).run(whole_patch,[node_a,node_b])
 assert whole and whole['collection_ok'] and node_a in whole['passed'] and node_b not in whole['passed'] and node_b in whole['failed'], whole
+server=CheckServer()
+try:
+    fresh=CollectionCheck(selector,backend=server)
+    first=fresh.run(whole_patch,[node_a,node_b])
+    assert first==whole, (first,whole)
+    # The next request must not inherit the preceding patched module, pytest
+    # collection, test globals or cached source text from the previous child.
+    different=whole_patch.replace('+\u0023 physical source sentinel', '+\u0023 different source sentinel')
+    assert different!=whole_patch
+    second=fresh.run(different,[node_a])
+    assert second and node_a in second['failed'] and node_a not in second['passed'], second
+    third=fresh.run(whole_patch,[node_a])
+    assert third and node_a in third['passed'] and not third['failed'], third
+    assert fresh.used>0, 'descendant CPU must count toward the check budget'
+finally:
+    server.close()
 print(json.dumps({'import_failure_files':len(files),'omitted_after_check':len(missing),'failed_subtest_detected':True,'failing_metadata_readers_retained':4,'conservative_comment_selection_covers_every_test':True,'callback_failure_retained':True,'import_time_callback_stays_broad':True,'shared_fixture_class_tests':len(executor),'real_patched_source_read':True,'whole_test_failed_subtest_retained':True}))
 """
 

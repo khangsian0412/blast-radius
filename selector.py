@@ -1280,10 +1280,12 @@ def main():
         return
     cls = OptimizedSelector if args.selection == "optimized" else Selector
     selector = cls(tests, args.map, args.source)
+    backend = None
     if args.selection == "optimized":
-        from collection_check import CollectionCheck
-        selector.import_validator = CollectionCheck(selector)
-    whole_checks = CollectionCheck(selector, budget=20) if args.selection == "optimized" and not args.no_probe else None
+        from collection_check import CheckServer, CollectionCheck
+        backend = CheckServer() if sys.platform == "linux" else None
+        selector.import_validator = CollectionCheck(selector, backend=backend)
+    whole_checks = selector.import_validator if args.selection == "optimized" and not args.no_probe else None
     from verification import Verifier
 
     verifier = Verifier(selector) if args.selection == "precise" and not args.no_probe else None
@@ -1320,6 +1322,8 @@ def main():
             + ("; " + "; ".join(selector.reasons) if selector.reasons else ""),
             file=sys.stderr,
         )
+    if backend is not None:
+        backend.close()
     print(f"selected {total} test executions", file=sys.stderr)
 
 
