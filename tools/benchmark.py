@@ -16,6 +16,7 @@ from score import evaluate_run
 
 MEASURE = """
 import json, resource, runpy, sys
+sys.argv = ['/app/selector.py', *sys.argv[1:]]
 runpy.run_path('/app/selector.py', run_name='__main__')
 a = resource.getrusage(resource.RUSAGE_SELF)
 b = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -27,6 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", default="blast-radius")
     parser.add_argument("--data", type=Path, default=Path("sample"))
+    parser.add_argument("--selection", choices=("conservative", "optimized", "precise", "complete"))
     args = parser.parse_args()
     data = args.data.resolve()
     tests = json.loads((data / "tests.json").read_text())["tests"]
@@ -62,6 +64,8 @@ def main():
         "-c",
         MEASURE,
     ]
+    if args.selection:
+        command.extend(["--selection", args.selection])
     runs = []
     first = None
     identical = True
