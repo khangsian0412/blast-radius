@@ -57,6 +57,16 @@ class RealCheckTests(unittest.TestCase):
             self.assertTrue(check.validate_selection(self.patch, 3))
             run.assert_called_once_with(self.patch)
 
+    def test_late_import_requires_a_fresh_normal_test_check(self):
+        check = self.checker()
+        late = {"collection_ok": True, "passed": [], "failed": [], "late_import": True}
+        normal = {"collection_ok": True, "passed": [self.tests[0]["id"]], "failed": []}
+        with patch.object(check, "run", side_effect=[late, normal]) as run:
+            self.assertTrue(check.validate_selection(self.patch, 3))
+            self.assertEqual(check.check_tests(self.patch, 3), 2)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.kwargs, {})
+
     def test_same_size_same_timestamp_patch_cannot_reuse_baseline_bytecode(self):
         baseline = self.root / "baseline"
         baseline.mkdir()

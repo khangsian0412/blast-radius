@@ -82,8 +82,16 @@ def server():
 
     output = sys.stdout
     with open(os.devnull, "w") as sink, contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
-        for module in ("pytest", "numpy", "pandas", "pandas.testing", "duckdb"):
+        for module in ("pytest", "numpy", "pandas", "pandas.testing", "duckdb", "setuptools.command.build_ext", "unittest.mock", "doctest"):
             importlib.import_module(module)
+        from _pytest.config import default_plugins
+        for plugin in default_plugins:
+            importlib.import_module("_pytest." + plugin)
+        # Import the installed external plugin modules, without registering
+        # hooks or creating a pytest session in this parent.
+        from importlib.metadata import entry_points
+        for plugin in entry_points(group="pytest11"):
+            importlib.import_module(plugin.module)
     if any(name == "sqlglot" or name.startswith(("sqlglot.", "tests.")) or name == "tests" for name in sys.modules):
         raise RuntimeError("check parent imported application code")
     print(json.dumps({"ready": True}), file=output, flush=True)
@@ -179,7 +187,7 @@ class CollectionCheck:
         if targets is None:
             return self(patch)
         report = self.run(patch, targets, require_imports=True)
-        self.cached_check = (patch, tuple(targets), report)
+        self.cached_check = (patch, tuple(targets), report) if isinstance(report, dict) and not report.get("late_import") else None
         return isinstance(report, dict) and report.get("collection_ok") is True
 
     def check_tests(self, patch, selected):
@@ -302,7 +310,10 @@ def worker(request=None, output=None):
         except BaseException:
             passed = False
     if "tests" in request:
-        json.dump({"collection_ok": not failures and result in (0, 1), "passed": sorted(completed - failed) if not unsafe[0] and not imported_late[0] and result in (0, 1) else [], "failed": sorted(failed)}, output)
+        report = {"collection_ok": not failures and result in (0, 1), "passed": sorted(completed - failed) if not unsafe[0] and not imported_late[0] and result in (0, 1) else [], "failed": sorted(failed)}
+        if imported_late[0]:
+            report["late_import"] = True
+        json.dump(report, output)
     else:
         json.dump({"collection_ok": passed}, output)
 
